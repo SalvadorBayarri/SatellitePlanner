@@ -1227,7 +1227,7 @@ body,
 
 .request-image-dialog {
   position: absolute;
-  width: 390px;
+  width: 410px;
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -1261,12 +1261,18 @@ body,
 
 .req-coords-row {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 8px;
   align-items: end;
 }
 
+.req-coords-row .field-group {
+  min-width: 0;
+}
+
 .req-coords-row .field-group input {
+  width: 100%;
+  min-width: 0;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   font-weight: 600;
@@ -1376,4 +1382,253 @@ body,
 
 .req-submit-btn {
   margin-top: 2px;
+}
+
+.acq-status-badge.reserved {
+  background: rgba(168, 85, 247, 0.22);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.5);
+}
+
+/* Request Evaluation Result Popup Window */
+.evaluation-result-popup {
+  position: absolute;
+  width: 420px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(192, 132, 252, 0.55);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.8);
+}
+
+.eval-icon-success {
+  color: #34d399;
+}
+
+.eval-icon-alt {
+  color: #fbbf24;
+}
+
+.eval-outcome-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.eval-outcome-banner strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.eval-outcome-banner.fulfilled {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #d1fae5;
+}
+
+.eval-outcome-banner.fulfilled strong {
+  color: #34d399;
+}
+
+.eval-outcome-banner.alternative {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fef3c7;
+}
+
+.eval-outcome-banner.alternative strong {
+  color: #fbbf24;
+}
+
+.eval-details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  background: rgba(2, 6, 23, 0.68);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.eval-details-grid .label {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.eval-details-grid .mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.eval-details-grid .mono.highlight {
+  color: var(--accent-cyan);
+}
+
+.eval-sat-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eval-cost-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.35), rgba(30, 58, 138, 0.35));
+  border: 1px solid rgba(192, 132, 252, 0.45);
+}
+
+.eval-cost-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e9d5ff;
+}
+
+.eval-cost-icon {
+  color: #c084fc;
+}
+
+.eval-cost-points {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 800;
+  color: #f3e8ff;
+}
+
+.eval-actions-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.eval-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.eval-btn.confirm {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.85), rgba(5, 150, 105, 0.85));
+  border: 1px solid rgba(52, 211, 153, 0.65);
+  color: #ffffff;
+}
+
+.eval-btn.confirm:hover {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 1), rgba(5, 150, 105, 1));
+  transform: translateY(-1px);
+}
+
+.eval-btn.cancel {
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  color: #fda4af;
+}
+
+.eval-btn.cancel:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.22);
+  border-color: #fb7185;
+  color: #ffffff;
+}
+
+.eval-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Evaluating Queue Indicator Banner */
+.evaluating-queue-banner {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 24;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  background: rgba(15, 23, 42, 0.92);
+  font-size: 12px;
+  font-weight: 600;
+  color: #e0f2fe;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+}
+
+/* Reservation Auto-Canceled Notification Dialog */
+.cancel-notification-popup {
+  position: absolute;
+  width: 400px;
+  z-index: 26;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(244, 63, 94, 0.65);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.85);
+}
+
+.cancel-icon-rose {
+  color: #fb7185;
+}
+
+.cancel-tag {
+  color: #fb7185 !important;
+}
+
+.cancel-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(244, 63, 94, 0.14);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #ffe4e6;
+}
+
+.cancel-notice-body strong {
+  font-size: 13px;
+  color: #fda4af;
+}
+
+.cancel-dismiss-btn {
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+}
+
+.cancel-dismiss-btn:hover {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--accent-cyan);
 }

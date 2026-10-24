@@ -14,4 +14,6 @@ export const config = {
   acquisitionStreamName: 'ACQUISITION_STREAM',
   acquisitionStreamSubjects: ['acquisition.plan.>'],
   acquisitionSubjectUpdated: 'acquisition.plan.updated',
+  acquisitionSubjectRequestEvaluated: 'acquisition.plan.request_evaluated',
+  acquisitionSubjectCanceled: 'acquisition.plan.canceled',
 };

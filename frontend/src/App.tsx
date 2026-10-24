@@ -18,6 +18,9 @@ import {
   ChevronRight,
   ClipboardList,
   User as UserIcon,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
@@ -27,6 +30,8 @@ import {
   SatellitePosition,
   UserRow,
   AcquisitionPlanRow,
+  AcquisitionRequestEvaluationResult,
+  AcquisitionCancelEventPayload,
   HealthResponse,
   fetchGeoEvents,
   createGeoEvent,
@@ -36,6 +41,9 @@ import {
   initializeAcquisitionPlan,
   fetchAcquisitionPlan,
   fetchAcquisitionById,
+  submitAcquisitionRequest,
+  confirmReservedAcquisition,
+  cancelReservedAcquisition,
   subscribeToAcquisitionUpdates,
   computeSatellitePosition,
   getSatelliteColor,
@@ -148,6 +156,14 @@ export function App() {
   const [requestAbsoluteTime, setRequestAbsoluteTime] = useState<string>(() =>
     new Date(Date.now() + 10 * 60_000).toISOString().slice(0, 16)
   );
+  const [submittingImageRequest, setSubmittingImageRequest] = useState<boolean>(false);
+  const [requestSubmitError, setRequestSubmitError] = useState<string | null>(null);
+  const [pendingEvaluationsCount, setPendingEvaluationsCount] = useState<number>(0);
+  const [evaluationPopupResult, setEvaluationPopupResult] =
+    useState<AcquisitionRequestEvaluationResult | null>(null);
+  const [processingEvaluationAction, setProcessingEvaluationAction] = useState<boolean>(false);
+  const [cancelNotification, setCancelNotification] =
+    useState<AcquisitionCancelEventPayload | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<GeoEvent | null>(null);
   const [selectedSatelliteId, setSelectedSatelliteId] = useState<string | null>(null);
   const [trackSelectedSatellite, setTrackSelectedSatellite] = useState<boolean>(false);
@@ -256,15 +272,40 @@ export function App() {
       .catch((err) => console.error('Failed to load satellite fleet or acquisition plan:', err));
   }, []);
 
-  // Subscribe to real-time acquisition status updates via Server-Sent Events (NATS JetStream push)
+  // Subscribe to real-time acquisition status updates, request evaluations, and cancellations via Server-Sent Events (NATS JetStream push)
   useEffect(() => {
-    const unsubscribe = subscribeToAcquisitionUpdates((updatedRow) => {
-      setAcquisitionPlan((prev) => {
-        const exists = prev.some((r) => r.id === updatedRow.id);
-        if (!exists) return prev;
-        return prev.map((r) => (r.id === updatedRow.id ? updatedRow : r));
-      });
-    });
+    const unsubscribe = subscribeToAcquisitionUpdates(
+      (updatedRow) => {
+        setAcquisitionPlan((prev) => {
+          const exists = prev.some((r) => r.id === updatedRow.id);
+          if (!exists) return [...prev, updatedRow];
+          return prev.map((r) => (r.id === updatedRow.id ? updatedRow : r));
+        });
+      },
+      (evaluation) => {
+        setPendingEvaluationsCount((c) => Math.max(0, c - 1));
+        setCancelNotification(null);
+        setEvaluationPopupResult(evaluation);
+        // Also highlight the newly reserved acquisition on the 3D globe & Satellite Info Panel
+        setSelectedSatelliteId(evaluation.acquisition.satellite_id);
+        setSelectedAcquisitionId(evaluation.acquisition.id);
+        setAcquisitionFocusKey((prev) => prev + 1);
+      },
+      (cancelEvent) => {
+        // Remove the canceled Reserved acquisition from the plan
+        setAcquisitionPlan((prev) =>
+          prev.filter((r) => r.id !== cancelEvent.acquisition_id)
+        );
+        // Close the Confirmation dialog if it was open for this acquisition
+        setEvaluationPopupResult((prev) =>
+          prev && prev.acquisition.id === cancelEvent.acquisition_id ? null : prev
+        );
+        // Inform the user if the backend automatically canceled the reservation due to timeout or reaching capture time
+        if (cancelEvent.reason !== 'user_canceled') {
+          setCancelNotification(cancelEvent);
+        }
+      }
+    );
     return () => {
       unsubscribe();
     };
@@ -293,6 +334,77 @@ export function App() {
       console.error('Failed to refresh acquisition plan list:', err);
     }
   }, []);
+
+  const handleSubmitImageRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmittingImageRequest(true);
+    setRequestSubmitError(null);
+
+    try {
+      const lng = parseFloat(requestLongitude);
+      const lat = parseFloat(requestLatitude);
+      const sizeMeters = requestAreaSizeKm * 1000;
+
+      let requestedTimestampIso: string | null = null;
+      if (requestTimeMode === 'ABSOLUTE') {
+        const normalizedIso = requestAbsoluteTime.endsWith('Z')
+          ? requestAbsoluteTime
+          : requestAbsoluteTime.length === 16
+          ? `${requestAbsoluteTime}:00Z`
+          : `${requestAbsoluteTime}Z`;
+        requestedTimestampIso = new Date(normalizedIso).toISOString();
+      }
+
+      await submitAcquisitionRequest({
+        longitude: lng,
+        latitude: lat,
+        width_m: sizeMeters,
+        height_m: sizeMeters,
+        time_mode: requestTimeMode,
+        requested_timestamp: requestedTimestampIso,
+      });
+
+      setPendingEvaluationsCount((c) => c + 1);
+      setShowRequestImageDialog(false);
+      setIsPickingGlobeLocation(false);
+    } catch (err: any) {
+      setRequestSubmitError(err.message || 'Failed to submit acquisition request');
+    } finally {
+      setSubmittingImageRequest(false);
+    }
+  };
+
+  const handleConfirmReservation = async () => {
+    if (!evaluationPopupResult || processingEvaluationAction) return;
+    const acqId = evaluationPopupResult.acquisition.id;
+    setProcessingEvaluationAction(true);
+    try {
+      const res = await confirmReservedAcquisition(acqId);
+      setAcquisitionPlan((prev) =>
+        prev.map((row) => (row.id === acqId ? res.data : row))
+      );
+      setEvaluationPopupResult(null);
+    } catch (err) {
+      console.error('Failed to confirm reserved acquisition:', err);
+    } finally {
+      setProcessingEvaluationAction(false);
+    }
+  };
+
+  const handleCancelReservation = async () => {
+    if (!evaluationPopupResult || processingEvaluationAction) return;
+    const acqId = evaluationPopupResult.acquisition.id;
+    setProcessingEvaluationAction(true);
+    try {
+      await cancelReservedAcquisition(acqId);
+      setAcquisitionPlan((prev) => prev.filter((row) => row.id !== acqId));
+      setEvaluationPopupResult(null);
+    } catch (err) {
+      console.error('Failed to cancel reserved acquisition:', err);
+    } finally {
+      setProcessingEvaluationAction(false);
+    }
+  };
 
   const handlePublishEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -694,13 +806,7 @@ export function App() {
             </div>
           </div>
 
-          <form
-            className="request-image-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              // Action on submit not implemented yet per instructions
-            }}
-          >
+          <form className="request-image-form" onSubmit={handleSubmitImageRequest}>
             {/* 1. Longitude & Latitude + Pick on Globe Button */}
             <div className="req-section">
               <span className="req-section-label">TARGET LOCATION (LONGITUDE & LATITUDE)</span>
@@ -814,12 +920,246 @@ export function App() {
               )}
             </div>
 
+            {requestSubmitError && <div className="error-banner">{requestSubmitError}</div>}
+
             {/* 4. Submit Request Button */}
-            <button type="submit" className="submit-btn req-submit-btn">
+            <button
+              type="submit"
+              className="submit-btn req-submit-btn"
+              disabled={submittingImageRequest}
+            >
               <Camera size={15} />
-              <span>Submit Request</span>
+              <span>{submittingImageRequest ? 'Enqueuing Request...' : 'Submit Request'}</span>
             </button>
           </form>
+        </DraggablePanel>
+      )}
+
+      {/* Draggable Floating Request Evaluation Result Popup Window */}
+      {evaluationPopupResult && (
+        <DraggablePanel
+          className="evaluation-result-popup glass-card"
+          initialPosition={{
+            x: Math.max(24, Math.round(window.innerWidth / 2 - 210)),
+            y: 120,
+          }}
+          ariaLabel="Acquisition Request Evaluation Result"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              {evaluationPopupResult.fulfilled_as_requested ? (
+                <CheckCircle2 size={16} className="eval-icon-success" />
+              ) : (
+                <AlertCircle size={16} className="eval-icon-alt" />
+              )}
+              <span className="tooltip-tag">ACQUISITION REQUEST EVALUATION RESULT</span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setEvaluationPopupResult(null)}
+                aria-label="Close evaluation result popup"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div
+            className={`eval-outcome-banner ${
+              evaluationPopupResult.fulfilled_as_requested ? 'fulfilled' : 'alternative'
+            }`}
+          >
+            {evaluationPopupResult.time_mode === 'ASAP' ? (
+              <>
+                <strong>Request Feasible (ASAP)</strong>
+                <span>
+                  Earliest available conflict-free satellite pass over the target area has been
+                  reserved.
+                </span>
+              </>
+            ) : evaluationPopupResult.fulfilled_as_requested ? (
+              <>
+                <strong>Request Fulfilled at Requested Time</strong>
+                <span>
+                  A satellite is in position over the target area at your exact requested time.
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>Alternative Capture Time Proposed</strong>
+                <span>
+                  No satellite covers the target area at the exact requested time. The closest
+                  feasible conflict-free pass has been reserved instead.
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="eval-details-grid">
+            <div>
+              <span className="label">ASSIGNED SATELLITE</span>
+              <span className="mono eval-sat-val">
+                {(() => {
+                  const satCfg = satellites.find(
+                    (s) => s.id === evaluationPopupResult.acquisition.satellite_id
+                  );
+                  const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
+                  const shortCode = evaluationPopupResult.acquisition.satellite_id
+                    .slice(-4)
+                    .toUpperCase();
+                  return (
+                    <>
+                      <span
+                        className="acq-list-sat-dot"
+                        style={{
+                          backgroundColor: satColor,
+                          boxShadow: `0 0 8px ${satColor}`,
+                        }}
+                      />
+                      <span>SAT-{shortCode}</span>
+                    </>
+                  );
+                })()}
+              </span>
+            </div>
+
+            <div>
+              <span className="label">PLAN STATUS</span>
+              <span className="mono">
+                <span className="acq-status-badge reserved">
+                  {evaluationPopupResult.acquisition.status}
+                </span>
+              </span>
+            </div>
+
+            <div>
+              <span className="label">REQUESTED TIME</span>
+              <span className="mono">
+                {evaluationPopupResult.time_mode === 'ASAP' ||
+                !evaluationPopupResult.requested_timestamp
+                  ? 'As soon as possible'
+                  : formatUtcTimestamp(
+                      new Date(evaluationPopupResult.requested_timestamp).getTime()
+                    )}
+              </span>
+            </div>
+
+            <div>
+              <span className="label">FEASIBLE CAPTURE TIME</span>
+              <span className="mono highlight">
+                {formatUtcTimestamp(
+                  new Date(evaluationPopupResult.feasible_timestamp).getTime()
+                )}
+              </span>
+            </div>
+
+            <div>
+              <span className="label">TARGET COORDINATES</span>
+              <span className="mono">
+                {evaluationPopupResult.acquisition.center_latitude_deg.toFixed(4)}°,{' '}
+                {evaluationPopupResult.acquisition.center_longitude_deg.toFixed(4)}°
+              </span>
+            </div>
+
+            <div>
+              <span className="label">CAPTURE AREA</span>
+              <span className="mono">
+                {(evaluationPopupResult.acquisition.width_m / 1000).toFixed(0)} ×{' '}
+                {(evaluationPopupResult.acquisition.height_m / 1000).toFixed(0)} km
+              </span>
+            </div>
+          </div>
+
+          <div className="eval-cost-box">
+            <div className="eval-cost-left">
+              <Sparkles size={15} className="eval-cost-icon" />
+              <span>ESTIMATED ACQUISITION COST</span>
+            </div>
+            <span className="eval-cost-points">
+              {evaluationPopupResult.estimated_cost_points} PTS
+            </span>
+          </div>
+
+          <div className="eval-actions-row">
+            <button
+              type="button"
+              className="eval-btn confirm"
+              disabled={processingEvaluationAction}
+              onClick={handleConfirmReservation}
+            >
+              <CheckCircle2 size={14} />
+              <span>{processingEvaluationAction ? 'Processing...' : 'Confirm Request'}</span>
+            </button>
+            <button
+              type="button"
+              className="eval-btn cancel"
+              disabled={processingEvaluationAction}
+              onClick={handleCancelReservation}
+            >
+              <X size={14} />
+              <span>Cancel Request</span>
+            </button>
+          </div>
+        </DraggablePanel>
+      )}
+
+      {/* Evaluating Queued Request Indicator Banner (shown during the 10-second evaluation) */}
+      {pendingEvaluationsCount > 0 && (
+        <div className="evaluating-queue-banner glass-card" role="status" aria-live="polite">
+          <RefreshCw size={15} className="spin accent-cyan" />
+          <span>
+            Evaluating acquisition request in orbital queue ({pendingEvaluationsCount} pending)...
+          </span>
+        </div>
+      )}
+
+      {/* Draggable Reservation Auto-Canceled Notification Dialog */}
+      {cancelNotification && (
+        <DraggablePanel
+          className="cancel-notification-popup glass-card"
+          initialPosition={{
+            x: Math.max(24, Math.round(window.innerWidth / 2 - 200)),
+            y: 160,
+          }}
+          ariaLabel="Acquisition Reservation Canceled Notification"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              <AlertCircle size={16} className="cancel-icon-rose" />
+              <span className="tooltip-tag cancel-tag">RESERVATION AUTOMATICALLY CANCELED</span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setCancelNotification(null)}
+                aria-label="Close cancellation notice"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div className="cancel-notice-body">
+            <strong>
+              {cancelNotification.reason === 'acquisition_time_reached'
+                ? 'Capture Window Reached Without Confirmation'
+                : 'Confirmation Timeout Exceeded (1 Minute)'}
+            </strong>
+            <p>{cancelNotification.message}</p>
+          </div>
+
+          <button
+            type="button"
+            className="eval-btn cancel-dismiss-btn"
+            onClick={() => setCancelNotification(null)}
+          >
+            <span>Dismiss</span>
+          </button>
         </DraggablePanel>
       )}
 

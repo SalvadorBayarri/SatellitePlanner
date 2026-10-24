@@ -56,6 +56,7 @@ function getAcquisitionStatusColor(status: string): string {
   const normalized = (status || '').toLowerCase();
   if (normalized === 'completed') return '#34d399'; // Emerald green (.acq-status-badge.completed)
   if (normalized === 'acquiring') return '#38bdf8'; // Sky cyan (.acq-status-badge.acquiring)
+  if (normalized === 'reserved') return '#c084fc'; // Violet purple (.acq-status-badge.reserved)
   if (normalized === 'failed') return '#fb7185'; // Rose red (.acq-status-badge.failed)
   return '#fbbf24'; // Amber gold (.acq-status-badge.pending)
 }

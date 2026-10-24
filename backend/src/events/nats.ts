@@ -37,6 +37,27 @@ export interface AcquisitionPlanUpdatePayload {
   acquired_image: string | null;
 }
 
+export interface AcquisitionRequestEvaluationPayload {
+  request_id: string;
+  queued_at: string;
+  evaluated_at: string;
+  time_mode: 'ASAP' | 'ABSOLUTE';
+  requested_timestamp: string | null;
+  fulfilled_as_requested: boolean;
+  feasible_timestamp: string;
+  estimated_cost_points: number;
+  acquisition: AcquisitionPlanUpdatePayload;
+}
+
+export interface AcquisitionPlanCancelPayload {
+  acquisition_id: string;
+  request_id?: string;
+  satellite_id: string;
+  acquisition_timestamp: string;
+  reason: 'timeout' | 'acquisition_time_reached' | 'user_canceled';
+  message: string;
+}
+
 let nc: NatsConnection | null = null;
 let js: JetStreamClient | null = null;
 let jsm: JetStreamManager | null = null;
@@ -70,6 +91,34 @@ export function registerAcquisitionSseClient(res: Response): () => void {
 function broadcastAcquisitionUpdateToSseClients(payload: AcquisitionPlanUpdatePayload): void {
   if (acquisitionSseClients.size === 0) return;
   const sseData = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of acquisitionSseClients) {
+    try {
+      clientRes.write(sseData);
+    } catch {
+      acquisitionSseClients.delete(clientRes);
+    }
+  }
+}
+
+function broadcastRequestEvaluationToSseClients(
+  payload: AcquisitionRequestEvaluationPayload
+): void {
+  if (acquisitionSseClients.size === 0) return;
+  const sseData = `event: request_evaluated\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of acquisitionSseClients) {
+    try {
+      clientRes.write(sseData);
+    } catch {
+      acquisitionSseClients.delete(clientRes);
+    }
+  }
+}
+
+function broadcastAcquisitionCancelToSseClients(
+  payload: AcquisitionPlanCancelPayload
+): void {
+  if (acquisitionSseClients.size === 0) return;
+  const sseData = `event: cancel\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const clientRes of acquisitionSseClients) {
     try {
       clientRes.write(sseData);
@@ -210,6 +259,66 @@ export async function publishAcquisitionUpdated(
   }
 }
 
+/**
+ * Publishes an acquisition request evaluation result to NATS JetStream (acquisition.plan.request_evaluated).
+ * If NATS is temporarily disconnected, broadcasts directly to connected SSE clients as fallback.
+ */
+export async function publishAcquisitionRequestEvaluated(
+  payload: AcquisitionRequestEvaluationPayload
+): Promise<void> {
+  if (!js) {
+    broadcastRequestEvaluationToSseClients(payload);
+    return;
+  }
+
+  try {
+    const pubAck = await js.publish(
+      config.acquisitionSubjectRequestEvaluated,
+      sc.encode(JSON.stringify(payload))
+    );
+    publishedCount++;
+    console.log(
+      `[NATS Publisher] Published request evaluation (${payload.request_id} -> acquisition ${payload.acquisition.id}) to ${config.acquisitionSubjectRequestEvaluated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
+    );
+  } catch (err) {
+    console.warn(
+      '[NATS Publisher] Failed to publish request evaluation to JetStream, using direct SSE broadcast:',
+      err
+    );
+    broadcastRequestEvaluationToSseClients(payload);
+  }
+}
+
+/**
+ * Publishes an acquisition cancellation/expiration event to NATS JetStream (acquisition.plan.canceled).
+ * If NATS is temporarily disconnected, broadcasts directly to connected SSE clients as fallback.
+ */
+export async function publishAcquisitionCanceled(
+  payload: AcquisitionPlanCancelPayload
+): Promise<void> {
+  if (!js) {
+    broadcastAcquisitionCancelToSseClients(payload);
+    return;
+  }
+
+  try {
+    const pubAck = await js.publish(
+      config.acquisitionSubjectCanceled,
+      sc.encode(JSON.stringify(payload))
+    );
+    publishedCount++;
+    console.log(
+      `[NATS Publisher] Published acquisition cancel (${payload.acquisition_id}, reason=${payload.reason}) to ${config.acquisitionSubjectCanceled} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
+    );
+  } catch (err) {
+    console.warn(
+      '[NATS Publisher] Failed to publish acquisition cancel to JetStream, using direct SSE broadcast:',
+      err
+    );
+    broadcastAcquisitionCancelToSseClients(payload);
+  }
+}
+
 async function startDurableConsumer(): Promise<void> {
   if (!js) return;
 
@@ -255,25 +364,31 @@ async function startAcquisitionStreamConsumer(): Promise<void> {
   const consumerInfo = await jsm.consumers.add(config.acquisitionStreamName, {
     ack_policy: AckPolicy.Explicit,
     deliver_policy: DeliverPolicy.New,
-    filter_subject: config.acquisitionSubjectUpdated,
+    filter_subject: 'acquisition.plan.>',
   });
 
   const consumer = await js.consumers.get(config.acquisitionStreamName, consumerInfo.name);
   const messages = await consumer.consume();
 
   console.log(
-    `[NATS Consumer] Listening for "${config.acquisitionSubjectUpdated}" messages on stream "${config.acquisitionStreamName}" for SSE push...`
+    `[NATS Consumer] Listening for "acquisition.plan.>" messages on stream "${config.acquisitionStreamName}" for SSE push...`
   );
 
   for await (const msg of messages) {
     try {
       const rawData = sc.decode(msg.data);
-      const payload: AcquisitionPlanUpdatePayload = JSON.parse(rawData);
+      const parsed = JSON.parse(rawData);
       msg.ack();
       consumedCount++;
-      broadcastAcquisitionUpdateToSseClients(payload);
+      if (msg.subject === config.acquisitionSubjectRequestEvaluated) {
+        broadcastRequestEvaluationToSseClients(parsed as AcquisitionRequestEvaluationPayload);
+      } else if (msg.subject === config.acquisitionSubjectCanceled) {
+        broadcastAcquisitionCancelToSseClients(parsed as AcquisitionPlanCancelPayload);
+      } else {
+        broadcastAcquisitionUpdateToSseClients(parsed as AcquisitionPlanUpdatePayload);
+      }
     } catch (err) {
-      console.error('[NATS Consumer] Failed to process acquisition update message:', err);
+      console.error('[NATS Consumer] Failed to process acquisition stream message:', err);
       msg.nak(2000);
     }
   }

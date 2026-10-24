@@ -92,4 +92,17 @@ CREATE TABLE IF NOT EXISTS acquisition_plan (
   acquired_image TEXT
 );
 
+CREATE TABLE IF NOT EXISTS acquisition_requests (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  center_longitude_deg FLOAT NOT NULL,
+  center_latitude_deg FLOAT NOT NULL,
+  width_m FLOAT NOT NULL,
+  height_m FLOAT NOT NULL,
+  time_mode VARCHAR(32) NOT NULL,
+  requested_timestamp TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  status VARCHAR(32) NOT NULL DEFAULT 'Queued'
+);
+
 ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS user_id UUID;

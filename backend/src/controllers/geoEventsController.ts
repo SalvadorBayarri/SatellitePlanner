@@ -5,14 +5,22 @@ import {
   publishGeoEventCreated,
   checkNatsHealth,
   registerAcquisitionSseClient,
+  publishAcquisitionUpdated,
+  publishAcquisitionCanceled,
 } from '../events/nats';
 import { startAcquisitionPlanExecutor } from '../services/acquisitionExecutor';
+import {
+  triggerRequestQueueProcessor,
+  clearReservationTimer,
+  clearAllReservationTimers,
+} from '../services/requestQueueProcessor';
 import { isPointOnLand } from '../utils/landMask';
 
 const ORBIT_PERIOD_MINUTES = 97;
 const COVERAGE_SIZE_METERS = 300_000; // 300 km x 300 km satellite footprint
 const METERS_PER_DEG_LAT = 111_320;
 const DEFAULT_SYSTEM_USER_ID = 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01';
+const DEFAULT_DEMO_USER_ID = 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02';
 
 function normalizeLongitude(deg: number): number {
   const wrapped = ((((deg + 180) % 360) + 360) % 360) - 180;
@@ -495,8 +503,10 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
   try {
     const pool = getPool();
 
-    // Clear existing acquisition plan rows before initializing new 3h plan
+    // Clear existing acquisition plan rows and old request queue before initializing new 3h plan
+    clearAllReservationTimers();
     await pool.query('DELETE FROM acquisition_plan');
+    await pool.query('DELETE FROM acquisition_requests');
 
     // Look up the "system" user ID
     const systemUserResult = await pool.query(
@@ -648,6 +658,244 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
     console.error('[Controller] Error initializing acquisition_plan:', error);
     res.status(500).json({
       error: 'Failed to initialize acquisition plan',
+      details: error?.message,
+    });
+  }
+}
+
+/**
+ * Enqueues a new image acquisition request with a timestamp (`created_at`) and triggers
+ * the FIFO background request evaluator.
+ */
+export async function submitAcquisitionRequest(req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const {
+      longitude,
+      latitude,
+      width_m,
+      height_m,
+      time_mode,
+      requested_timestamp,
+      user_id,
+    } = req.body;
+
+    const lng = Number(longitude);
+    const lat = Number(latitude);
+    const widthM = Number(width_m);
+    const heightM = Number(height_m);
+    const mode = String(time_mode || 'ASAP').toUpperCase() === 'ABSOLUTE' ? 'ABSOLUTE' : 'ASAP';
+
+    if (Number.isNaN(lat) || lat < -90 || lat > 90) {
+      res.status(400).json({ error: 'Field "latitude" must be between -90 and 90.' });
+      return;
+    }
+
+    if (Number.isNaN(lng) || lng < -180 || lng > 180) {
+      res.status(400).json({ error: 'Field "longitude" must be between -180 and 180.' });
+      return;
+    }
+
+    if (Number.isNaN(widthM) || widthM <= 0 || Number.isNaN(heightM) || heightM <= 0) {
+      res.status(400).json({ error: 'Fields "width_m" and "height_m" must be positive numbers.' });
+      return;
+    }
+
+    let parsedRequestedIso: string | null = null;
+    if (mode === 'ABSOLUTE') {
+      if (!requested_timestamp) {
+        res.status(400).json({ error: 'Field "requested_timestamp" is required for ABSOLUTE time mode.' });
+        return;
+      }
+      const parsedMs = new Date(requested_timestamp).getTime();
+      if (Number.isNaN(parsedMs)) {
+        res.status(400).json({ error: 'Field "requested_timestamp" is not a valid date/time.' });
+        return;
+      }
+      parsedRequestedIso = new Date(parsedMs).toISOString();
+    }
+
+    // Default to the "demo" user when submitted from the web app
+    let resolvedUserId = typeof user_id === 'string' && user_id.trim() ? user_id.trim() : '';
+    if (!resolvedUserId) {
+      const demoUserRes = await pool.query('SELECT id FROM users WHERE name = $1 LIMIT 1', [
+        'demo',
+      ]);
+      resolvedUserId = demoUserRes.rows[0]?.id || DEFAULT_DEMO_USER_ID;
+    }
+
+    const requestId = crypto.randomUUID();
+    const createdAtIso = new Date().toISOString();
+
+    await pool.query(
+      `INSERT INTO acquisition_requests (
+         id,
+         user_id,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         time_mode,
+         requested_timestamp,
+         created_at,
+         status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        requestId,
+        resolvedUserId,
+        lng,
+        lat,
+        widthM,
+        heightM,
+        mode,
+        parsedRequestedIso,
+        createdAtIso,
+        'Queued',
+      ]
+    );
+
+    // Trigger FIFO queue processor asynchronously
+    triggerRequestQueueProcessor();
+
+    res.status(202).json({
+      status: 'queued',
+      request: {
+        id: requestId,
+        user_id: resolvedUserId,
+        center_longitude_deg: lng,
+        center_latitude_deg: lat,
+        width_m: widthM,
+        height_m: heightM,
+        time_mode: mode,
+        requested_timestamp: parsedRequestedIso,
+        created_at: createdAtIso,
+        status: 'Queued',
+      },
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error submitting acquisition request:', error);
+    res.status(500).json({
+      error: 'Failed to enqueue acquisition request',
+      details: error?.message,
+    });
+  }
+}
+
+/**
+ * Confirms a 'Reserved' acquisition entry in acquisition_plan, transitioning its status to 'Pending'
+ * and activating it in the background acquisition executor.
+ */
+export async function confirmReservedAcquisition(req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const id = String(req.params.id);
+
+    clearReservationTimer(id);
+
+    const existingRes = await pool.query(
+      `SELECT
+         id,
+         satellite_id,
+         user_id,
+         acquisition_timestamp,
+         duration_seconds,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         status,
+         acquired_image
+       FROM acquisition_plan
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (existingRes.rows.length === 0) {
+      res.status(404).json({
+        error: 'Reserved acquisition not found or has already expired.',
+      });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE acquisition_plan SET status = 'Pending' WHERE id = $1`,
+      [id]
+    );
+
+    const updatedRow = mapAcquisitionRow({
+      ...existingRes.rows[0],
+      status: 'Pending',
+    });
+
+    await publishAcquisitionUpdated(updatedRow);
+    startAcquisitionPlanExecutor();
+
+    res.status(200).json({
+      status: 'confirmed',
+      data: updatedRow,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error confirming reserved acquisition:', error);
+    res.status(500).json({
+      error: 'Failed to confirm reserved acquisition',
+      details: error?.message,
+    });
+  }
+}
+
+/**
+ * Cancels a 'Reserved' acquisition entry and removes it from acquisition_plan.
+ */
+export async function cancelReservedAcquisition(req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const id = String(req.params.id);
+
+    clearReservationTimer(id);
+
+    const existingRes = await pool.query(
+      `SELECT id, satellite_id, acquisition_timestamp, status
+       FROM acquisition_plan
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (existingRes.rows.length === 0) {
+      res.status(200).json({
+        status: 'canceled',
+        acquisition_id: id,
+      });
+      return;
+    }
+
+    const row = existingRes.rows[0];
+    const satId = String(row.satellite_id);
+    const acqIso =
+      row.acquisition_timestamp instanceof Date
+        ? row.acquisition_timestamp.toISOString()
+        : String(row.acquisition_timestamp);
+
+    await pool.query(
+      `DELETE FROM acquisition_plan WHERE id = $1 AND status = 'Reserved'`,
+      [id]
+    );
+
+    await publishAcquisitionCanceled({
+      acquisition_id: id,
+      satellite_id: satId,
+      acquisition_timestamp: acqIso,
+      reason: 'user_canceled',
+      message: 'Reservation was canceled by the user.',
+    });
+
+    res.status(200).json({
+      status: 'canceled',
+      acquisition_id: id,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error canceling reserved acquisition:', error);
+    res.status(500).json({
+      error: 'Failed to cancel reserved acquisition',
       details: error?.message,
     });
   }

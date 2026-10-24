@@ -78,8 +78,38 @@ export interface AcquisitionPlanRow {
   center_latitude_deg: number;
   width_m: number;
   height_m: number;
-  status: 'Pending' | 'Acquiring' | 'Completed' | 'Failed' | string;
+  status: 'Reserved' | 'Pending' | 'Acquiring' | 'Completed' | 'Failed' | string;
   acquired_image: string | null;
+}
+
+export interface CreateAcquisitionRequestInput {
+  longitude: number;
+  latitude: number;
+  width_m: number;
+  height_m: number;
+  time_mode: 'ASAP' | 'ABSOLUTE';
+  requested_timestamp?: string | null;
+}
+
+export interface AcquisitionRequestEvaluationResult {
+  request_id: string;
+  queued_at: string;
+  evaluated_at: string;
+  time_mode: 'ASAP' | 'ABSOLUTE';
+  requested_timestamp: string | null;
+  fulfilled_as_requested: boolean;
+  feasible_timestamp: string;
+  estimated_cost_points: number;
+  acquisition: AcquisitionPlanRow;
+}
+
+export interface AcquisitionCancelEventPayload {
+  acquisition_id: string;
+  request_id?: string;
+  satellite_id: string;
+  acquisition_timestamp: string;
+  reason: 'timeout' | 'acquisition_time_reached' | 'user_canceled';
+  message: string;
 }
 
 export interface AcquisitionPlanResponse {
@@ -321,12 +351,72 @@ export async function fetchAcquisitionById(id: string): Promise<{ data: Acquisit
   return response.json();
 }
 
+export async function submitAcquisitionRequest(
+  payload: CreateAcquisitionRequestInput
+): Promise<{
+  status: string;
+  request: {
+    id: string;
+    user_id: string;
+    center_longitude_deg: number;
+    center_latitude_deg: number;
+    width_m: number;
+    height_m: number;
+    time_mode: 'ASAP' | 'ABSOLUTE';
+    requested_timestamp: string | null;
+    created_at: string;
+    status: string;
+  };
+}> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to submit acquisition request: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function confirmReservedAcquisition(
+  id: string
+): Promise<{ status: string; data: AcquisitionPlanRow }> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/${encodeURIComponent(id)}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to confirm acquisition request: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function cancelReservedAcquisition(
+  id: string
+): Promise<{ status: string; acquisition_id: string }> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to cancel acquisition request: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 /**
  * Subscribes to Server-Sent Events (SSE) backed by NATS JetStream (ACQUISITION_STREAM)
- * to receive real-time acquisition plan state updates (`Pending` -> `Acquiring` -> `Completed`).
+ * to receive real-time acquisition plan state updates (`Reserved`, `Pending`, `Acquiring`, `Completed`),
+ * request evaluation notifications (`request_evaluated`), and cancellation events (`cancel`).
  */
 export function subscribeToAcquisitionUpdates(
-  onUpdate: (row: AcquisitionPlanRow) => void
+  onUpdate: (row: AcquisitionPlanRow) => void,
+  onRequestEvaluated?: (evaluation: AcquisitionRequestEvaluationResult) => void,
+  onCanceled?: (cancelEvent: AcquisitionCancelEventPayload) => void
 ): () => void {
   const eventSource = new EventSource(`${API_BASE_URL}/acquisition-plan/stream`);
   eventSource.onmessage = (event) => {
@@ -339,6 +429,27 @@ export function subscribeToAcquisitionUpdates(
       console.error('Failed to parse SSE acquisition update:', err);
     }
   };
+  eventSource.addEventListener('request_evaluated', (event: MessageEvent) => {
+    try {
+      const evaluation: AcquisitionRequestEvaluationResult = JSON.parse(event.data);
+      if (evaluation && evaluation.acquisition) {
+        onUpdate(evaluation.acquisition);
+        onRequestEvaluated?.(evaluation);
+      }
+    } catch (err) {
+      console.error('Failed to parse SSE request_evaluated event:', err);
+    }
+  });
+  eventSource.addEventListener('cancel', (event: MessageEvent) => {
+    try {
+      const cancelPayload: AcquisitionCancelEventPayload = JSON.parse(event.data);
+      if (cancelPayload && cancelPayload.acquisition_id) {
+        onCanceled?.(cancelPayload);
+      }
+    } catch (err) {
+      console.error('Failed to parse SSE cancel event:', err);
+    }
+  });
   return () => {
     eventSource.close();
   };
