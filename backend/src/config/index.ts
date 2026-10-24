@@ -11,4 +11,7 @@ export const config = {
   streamSubjects: ['geo.events.>'],
   eventSubjectCreated: 'geo.events.created',
   consumerDurableName: 'geo-events-postgres-writer',
+  acquisitionStreamName: 'ACQUISITION_STREAM',
+  acquisitionStreamSubjects: ['acquisition.plan.>'],
+  acquisitionSubjectUpdated: 'acquisition.plan.updated',
 };

@@ -68,15 +68,28 @@ INSERT INTO satellite_fleet (id, orbit_altitude_km, orbit_orientation_deg, refer
   ('b1eebc99-9c0b-4ef8-bb6d-6bb9bd380b30', 681.5,  84.0, -15.30,  1, CURRENT_TIMESTAMP - INTERVAL '48 minutes')
 ON CONFLICT (id) DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY,
+  name VARCHAR(255) NOT NULL
+);
+
+INSERT INTO users (id, name) VALUES
+  ('c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01', 'system'),
+  ('c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02', 'demo')
+ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS acquisition_plan (
   id UUID PRIMARY KEY,
   satellite_id UUID NOT NULL,
+  user_id UUID NOT NULL,
   acquisition_timestamp TIMESTAMPTZ NOT NULL,
-  duration_seconds INT NOT NULL DEFAULT 60,
+  duration_seconds INT NOT NULL DEFAULT 20,
   center_longitude_deg FLOAT NOT NULL,
   center_latitude_deg FLOAT NOT NULL,
   width_m FLOAT NOT NULL,
   height_m FLOAT NOT NULL,
-  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  status VARCHAR(32) NOT NULL DEFAULT 'Pending',
   acquired_image TEXT
 );
+
+ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS user_id UUID;

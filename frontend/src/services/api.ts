@@ -58,9 +58,20 @@ export interface SatelliteFleetResponse {
   total: number;
 }
 
+export interface UserRow {
+  id: string;
+  name: string;
+}
+
+export interface UsersResponse {
+  data: UserRow[];
+  total: number;
+}
+
 export interface AcquisitionPlanRow {
   id: string;
   satellite_id: string;
+  user_id: string;
   acquisition_timestamp: string;
   duration_seconds: number;
   center_longitude_deg: number;
@@ -274,6 +285,14 @@ export async function fetchSatellites(): Promise<SatelliteFleetResponse> {
   return response.json();
 }
 
+export async function fetchUsers(): Promise<UsersResponse> {
+  const response = await fetch(`${API_BASE_URL}/users`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch users: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export async function initializeAcquisitionPlan(): Promise<AcquisitionPlanResponse> {
   const response = await fetch(`${API_BASE_URL}/acquisition-plan/init`, {
     method: 'POST',
@@ -300,4 +319,27 @@ export async function fetchAcquisitionById(id: string): Promise<{ data: Acquisit
     throw new Error(`Failed to fetch acquisition item: ${response.statusText}`);
   }
   return response.json();
+}
+
+/**
+ * Subscribes to Server-Sent Events (SSE) backed by NATS JetStream (ACQUISITION_STREAM)
+ * to receive real-time acquisition plan state updates (`Pending` -> `Acquiring` -> `Completed`).
+ */
+export function subscribeToAcquisitionUpdates(
+  onUpdate: (row: AcquisitionPlanRow) => void
+): () => void {
+  const eventSource = new EventSource(`${API_BASE_URL}/acquisition-plan/stream`);
+  eventSource.onmessage = (event) => {
+    try {
+      const updated: AcquisitionPlanRow = JSON.parse(event.data);
+      if (updated && updated.id) {
+        onUpdate(updated);
+      }
+    } catch (err) {
+      console.error('Failed to parse SSE acquisition update:', err);
+    }
+  };
+  return () => {
+    eventSource.close();
+  };
 }

@@ -23,6 +23,8 @@ interface GlobeVisualizerProps {
   onSelectEvent: (event: GeoEvent) => void;
   onSelectSatellite: (satellite: SatellitePosition) => void;
   onFocusAcquisition?: () => void;
+  isPickingLocation?: boolean;
+  onPickLocation?: (coords: { lat: number; lng: number }) => void;
   getSimulatedTimeMs: () => number;
   autoRotate: boolean;
 }
@@ -512,6 +514,8 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   onSelectEvent,
   onSelectSatellite,
   onFocusAcquisition,
+  isPickingLocation = false,
+  onPickLocation,
   getSimulatedTimeMs,
   autoRotate,
 }) => {
@@ -525,6 +529,8 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   const onSelectEventRef = useRef(onSelectEvent);
   const onSelectSatelliteRef = useRef(onSelectSatellite);
   const onFocusAcquisitionRef = useRef(onFocusAcquisition);
+  const isPickingLocationRef = useRef<boolean>(isPickingLocation);
+  const onPickLocationRef = useRef(onPickLocation);
   const getSimulatedTimeMsRef = useRef(getSimulatedTimeMs);
   const meshCacheRef = useRef<Map<string, THREE.Group>>(new Map());
   const acqMeshCacheRef = useRef<Map<string, THREE.Group>>(new Map());
@@ -540,6 +546,8 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   onSelectEventRef.current = onSelectEvent;
   onSelectSatelliteRef.current = onSelectSatellite;
   onFocusAcquisitionRef.current = onFocusAcquisition;
+  isPickingLocationRef.current = isPickingLocation;
+  onPickLocationRef.current = onPickLocation;
   getSimulatedTimeMsRef.current = getSimulatedTimeMs;
 
   const syncDataToGlobe = (globe: GlobeInstance, currentEvents: GeoEvent[]) => {
@@ -947,7 +955,28 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
           </div>
         `;
       })
-      .onObjectClick((obj: object) => {
+      .onGlobeClick((coords: { lat: number; lng: number }) => {
+        if (isPickingLocationRef.current && onPickLocationRef.current) {
+          onPickLocationRef.current(coords);
+        }
+      })
+      .onObjectClick((obj: object, _event: MouseEvent, coords: { lat: number; lng: number }) => {
+        if (isPickingLocationRef.current && onPickLocationRef.current) {
+          if (coords && typeof coords.lat === 'number' && typeof coords.lng === 'number') {
+            onPickLocationRef.current(coords);
+            return;
+          }
+          if (isAcquisitionObject(obj)) {
+            onPickLocationRef.current({
+              lat: obj.acquisition.center_latitude_deg,
+              lng: obj.acquisition.center_longitude_deg,
+            });
+            return;
+          }
+          const sat = obj as SatellitePosition;
+          onPickLocationRef.current({ lat: sat.currentLat, lng: sat.currentLng });
+          return;
+        }
         if (isAcquisitionObject(obj)) return;
         const sat = obj as SatellitePosition;
         onSelectSatelliteRef.current(sat);
@@ -1101,7 +1130,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   return (
     <div
       ref={containerRef}
-      className="globe-canvas-container"
+      className={`globe-canvas-container ${isPickingLocation ? 'picking-location' : ''}`}
       aria-label="Interactive 3D Earth Telemetry Globe"
     />
   );

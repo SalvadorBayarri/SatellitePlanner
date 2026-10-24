@@ -1,4 +1,7 @@
 import { getPool } from '../db';
+import { publishAcquisitionUpdated } from '../events/nats';
+
+const DEFAULT_SYSTEM_USER_ID = 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01';
 
 let schedulerTimeout: NodeJS.Timeout | null = null;
 let currentGeneration = 0;
@@ -97,9 +100,9 @@ async function fetchSatelliteImage256(
  * Starts (or restarts) the event-driven background acquisition plan executor.
  * Steps:
  *  1. Sleeps until the next acquisition's (acquisition_timestamp - duration / 2) or (acquisition_timestamp + duration / 2).
- *  2. At (acquisition_timestamp - duration / 2), updates status to 'Acquiring'.
+ *  2. At (acquisition_timestamp - duration / 2), updates status to 'Acquiring' and publishes to NATS JetStream.
  *  3. At (acquisition_timestamp + duration / 2), fetches a 256x256 satellite image, stores it in acquired_image,
- *     and updates status to 'Completed'.
+ *     updates status to 'Completed', and publishes to NATS JetStream.
  */
 export function startAcquisitionPlanExecutor(): void {
   if (schedulerTimeout) {
@@ -120,6 +123,7 @@ async function runExecutorStep(generation: number): Promise<void> {
       `SELECT
          id,
          satellite_id,
+         user_id,
          acquisition_timestamp,
          duration_seconds,
          center_longitude_deg,
@@ -146,19 +150,24 @@ async function runExecutorStep(generation: number): Promise<void> {
     for (const row of rows) {
       if (generation !== currentGeneration) return;
 
-      const acqTimeMs = new Date(row.acquisition_timestamp).getTime();
-      const halfDurationMs = (Number(row.duration_seconds || 60) * 1000) / 2;
+      const acqTimeIso =
+        row.acquisition_timestamp instanceof Date
+          ? row.acquisition_timestamp.toISOString()
+          : String(row.acquisition_timestamp);
+      const acqTimeMs = new Date(acqTimeIso).getTime();
+      const durationSeconds = Number(row.duration_seconds || 60);
+      const halfDurationMs = (durationSeconds * 1000) / 2;
       const startAcquireMs = acqTimeMs - halfDurationMs;
       const endAcquireMs = acqTimeMs + halfDurationMs;
       const status = String(row.status);
+      const lat = Number(row.center_latitude_deg);
+      const lng = Number(row.center_longitude_deg);
+      const widthM = Number(row.width_m);
+      const heightM = Number(row.height_m);
+      const userId = row.user_id || DEFAULT_SYSTEM_USER_ID;
 
       if (nowMs >= endAcquireMs) {
-        // Acquisition window has finished -> fetch 256x256 satellite image and mark 'Completed'
-        const lat = Number(row.center_latitude_deg);
-        const lng = Number(row.center_longitude_deg);
-        const widthM = Number(row.width_m);
-        const heightM = Number(row.height_m);
-
+        // Acquisition window has finished -> fetch 256x256 satellite image, mark 'Completed', and publish to NATS JetStream
         const imageDataUri = await fetchSatelliteImage256(lat, lng, widthM, heightM);
         if (generation !== currentGeneration) return;
 
@@ -171,8 +180,22 @@ async function runExecutorStep(generation: number): Promise<void> {
         console.log(
           `[AcquisitionExecutor] Acquisition ${row.id} (sat ${String(row.satellite_id).slice(-4)}) -> Completed (256x256 image stored)`
         );
+
+        await publishAcquisitionUpdated({
+          id: row.id,
+          satellite_id: row.satellite_id,
+          user_id: userId,
+          acquisition_timestamp: acqTimeIso,
+          duration_seconds: durationSeconds,
+          center_longitude_deg: lng,
+          center_latitude_deg: lat,
+          width_m: widthM,
+          height_m: heightM,
+          status: 'Completed',
+          acquired_image: imageDataUri,
+        });
       } else if (nowMs >= startAcquireMs) {
-        // Inside acquisition window [T - D/2, T + D/2) -> ensure status is 'Acquiring'
+        // Inside acquisition window [T - D/2, T + D/2) -> ensure status is 'Acquiring' and publish to NATS JetStream
         if (status !== 'Acquiring') {
           await pool.query(
             `UPDATE acquisition_plan
@@ -183,6 +206,20 @@ async function runExecutorStep(generation: number): Promise<void> {
           console.log(
             `[AcquisitionExecutor] Acquisition ${row.id} (sat ${String(row.satellite_id).slice(-4)}) -> Acquiring`
           );
+
+          await publishAcquisitionUpdated({
+            id: row.id,
+            satellite_id: row.satellite_id,
+            user_id: userId,
+            acquisition_timestamp: acqTimeIso,
+            duration_seconds: durationSeconds,
+            center_longitude_deg: lng,
+            center_latitude_deg: lat,
+            width_m: widthM,
+            height_m: heightM,
+            status: 'Acquiring',
+            acquired_image: null,
+          });
         }
         if (endAcquireMs < nextWakeMs) {
           nextWakeMs = endAcquireMs;

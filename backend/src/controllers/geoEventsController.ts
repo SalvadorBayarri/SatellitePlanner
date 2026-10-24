@@ -1,12 +1,18 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { getPool, checkDbHealth } from '../db';
-import { publishGeoEventCreated, checkNatsHealth } from '../events/nats';
+import {
+  publishGeoEventCreated,
+  checkNatsHealth,
+  registerAcquisitionSseClient,
+} from '../events/nats';
 import { startAcquisitionPlanExecutor } from '../services/acquisitionExecutor';
+import { isPointOnLand } from '../utils/landMask';
 
 const ORBIT_PERIOD_MINUTES = 97;
 const COVERAGE_SIZE_METERS = 300_000; // 300 km x 300 km satellite footprint
 const METERS_PER_DEG_LAT = 111_320;
+const DEFAULT_SYSTEM_USER_ID = 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01';
 
 function normalizeLongitude(deg: number): number {
   const wrapped = ((((deg + 180) % 360) + 360) % 360) - 180;
@@ -245,10 +251,28 @@ export async function getSatelliteFleet(_req: Request, res: Response): Promise<v
   }
 }
 
+export async function getUsers(_req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const result = await pool.query('SELECT id, name FROM users ORDER BY name ASC');
+    res.status(200).json({
+      data: result.rows.map((r) => ({ id: r.id, name: r.name })),
+      total: result.rows.length,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error fetching users:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve users',
+      details: error?.message,
+    });
+  }
+}
+
 function mapAcquisitionRow(row: any) {
   return {
     id: row.id,
     satellite_id: row.satellite_id,
+    user_id: row.user_id || DEFAULT_SYSTEM_USER_ID,
     acquisition_timestamp:
       row.acquisition_timestamp instanceof Date
         ? row.acquisition_timestamp.toISOString()
@@ -263,6 +287,19 @@ function mapAcquisitionRow(row: any) {
   };
 }
 
+export function streamAcquisitionPlanUpdates(req: Request, res: Response): void {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const cleanup = registerAcquisitionSseClient(res);
+  req.on('close', () => {
+    cleanup();
+    res.end();
+  });
+}
+
 export async function getAcquisitionById(req: Request, res: Response): Promise<void> {
   try {
     const pool = getPool();
@@ -272,6 +309,7 @@ export async function getAcquisitionById(req: Request, res: Response): Promise<v
       `SELECT
          id,
          satellite_id,
+         user_id,
          acquisition_timestamp,
          duration_seconds,
          center_longitude_deg,
@@ -312,6 +350,7 @@ export async function getAcquisitionPlan(req: Request, res: Response): Promise<v
           `SELECT
              id,
              satellite_id,
+             user_id,
              acquisition_timestamp,
              duration_seconds,
              center_longitude_deg,
@@ -329,6 +368,7 @@ export async function getAcquisitionPlan(req: Request, res: Response): Promise<v
           `SELECT
              id,
              satellite_id,
+             user_id,
              acquisition_timestamp,
              duration_seconds,
              center_longitude_deg,
@@ -356,9 +396,100 @@ export async function getAcquisitionPlan(req: Request, res: Response): Promise<v
   }
 }
 
+interface CandidateTarget {
+  targetTimeMs: number;
+  widthM: number;
+  heightM: number;
+  centerLatDeg: number;
+  centerLngDeg: number;
+}
+
+/**
+ * Computes a random square target inside the satellite's 300x300 km footprint at targetTimeMs.
+ */
+function buildTargetAtTime(sat: SatelliteRow, targetTimeMs: number): CandidateTarget {
+  // Random square acquisition size between 5 km (5,000 m) and 50 km (50,000 m)
+  const sizeMeters = Math.round(5_000 + Math.random() * 45_000);
+  const widthM = sizeMeters;
+  const heightM = sizeMeters;
+
+  const subpoint = computeSatelliteSubpoint(sat, targetTimeMs);
+
+  // Ensure the widthM x heightM square fits completely inside the 300x300 km coverage footprint
+  const maxCenterOffsetM = (COVERAGE_SIZE_METERS - sizeMeters) / 2;
+  const offsetNorthM = (Math.random() * 2 - 1) * maxCenterOffsetM;
+  const offsetEastM = (Math.random() * 2 - 1) * maxCenterOffsetM;
+
+  const deltaLatDeg = offsetNorthM / METERS_PER_DEG_LAT;
+  const halfHeightDeg = heightM / 2 / METERS_PER_DEG_LAT;
+  const maxAbsLat = Math.max(0, 89.9 - halfHeightDeg);
+  const centerLatDeg = Number(
+    Math.max(-maxAbsLat, Math.min(maxAbsLat, subpoint.lat + deltaLatDeg)).toFixed(6)
+  );
+
+  const cosLat = Math.max(0.1, Math.cos((centerLatDeg * Math.PI) / 180));
+  const metersPerDegLng = METERS_PER_DEG_LAT * cosLat;
+  const deltaLngDeg = offsetEastM / metersPerDegLng;
+  const centerLngDeg = Number(normalizeLongitude(subpoint.lng + deltaLngDeg).toFixed(6));
+
+  return {
+    targetTimeMs,
+    widthM,
+    heightM,
+    centerLatDeg,
+    centerLngDeg,
+  };
+}
+
+/**
+ * Samples a timestamp in [minTimeMs, maxTimeMs] where both the satellite subpoint and
+ * the target center inside its footprint lie on a landmass.
+ */
+function sampleLandAcquisitionForSatellite(
+  sat: SatelliteRow,
+  minTimeMs: number,
+  maxTimeMs: number
+): CandidateTarget {
+  const windowMs = Math.max(1_000, maxTimeMs - minTimeMs);
+
+  // 1. Rejection sampling over random timestamps in [minTimeMs, maxTimeMs]
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const t = minTimeMs + Math.floor(Math.random() * windowMs);
+    const subpoint = computeSatelliteSubpoint(sat, t);
+    if (!isPointOnLand(subpoint.lat, subpoint.lng)) {
+      continue;
+    }
+    const candidate = buildTargetAtTime(sat, t);
+    if (isPointOnLand(candidate.centerLatDeg, candidate.centerLngDeg)) {
+      return candidate;
+    }
+  }
+
+  // 2. Deterministic scan fallback (20-second steps from a random offset)
+  const stepMs = 20_000;
+  const steps = Math.max(1, Math.floor(windowMs / stepMs));
+  const startStep = Math.floor(Math.random() * steps);
+  for (let s = 0; s < steps; s++) {
+    const idx = (startStep + s) % steps;
+    const t = minTimeMs + idx * stepMs;
+    const subpoint = computeSatelliteSubpoint(sat, t);
+    if (isPointOnLand(subpoint.lat, subpoint.lng)) {
+      for (let k = 0; k < 10; k++) {
+        const candidate = buildTargetAtTime(sat, t);
+        if (isPointOnLand(candidate.centerLatDeg, candidate.centerLngDeg)) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  return buildTargetAtTime(sat, minTimeMs + Math.floor(Math.random() * windowMs));
+}
+
 /**
  * Clears existing rows and adds 4 new acquisition plan rows per satellite for the 3 hours
- * following current UTC time, then returns the complete acquisition plan.
+ * following current UTC time (assigned to the "system" user), with the first acquisition
+ * occurring 3 minutes after initialization and all acquisitions located on land masses.
  */
 export async function initializeAcquisitionPlan(_req: Request, res: Response): Promise<void> {
   try {
@@ -366,6 +497,13 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
 
     // Clear existing acquisition plan rows before initializing new 3h plan
     await pool.query('DELETE FROM acquisition_plan');
+
+    // Look up the "system" user ID
+    const systemUserResult = await pool.query(
+      'SELECT id FROM users WHERE name = $1 LIMIT 1',
+      ['system']
+    );
+    const systemUserId: string = systemUserResult.rows[0]?.id || DEFAULT_SYSTEM_USER_ID;
 
     const fleetResult = await pool.query(
       `SELECT
@@ -392,46 +530,66 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
     }));
 
     const nowMs = Date.now();
-    const threeHoursMs = 3 * 60 * 60 * 1000;
-    const durationSeconds = 60; // Constant 1 minute acquisition interval for the prototype
+    const firstAcquisitionTimeMs = nowMs + 2 * 60 * 1000; // First acquisition 2 minutes after initialization
+    const maxAcquisitionTimeMs = nowMs + 3 * 60 * 60 * 1000; // Up to 3 hours after initialization
+    const durationSeconds = 20; // 20-second acquisition duration
     let addedCount = 0;
+
+    // Select a satellite that is passing over a landmass at T = now + 2 minutes for the very first acquisition
+    const shuffledSatellites = [...satellites].sort(() => Math.random() - 0.5);
+    let firstSatId: string | null = null;
+    let firstSatTarget: CandidateTarget | null = null;
+
+    // Pass 1: Satellite subpoint AND target both on land at exact T = now + 2 minutes
+    for (const sat of shuffledSatellites) {
+      const subpoint = computeSatelliteSubpoint(sat, firstAcquisitionTimeMs);
+      if (!isPointOnLand(subpoint.lat, subpoint.lng)) continue;
+      for (let k = 0; k < 25; k++) {
+        const candidate = buildTargetAtTime(sat, firstAcquisitionTimeMs);
+        if (isPointOnLand(candidate.centerLatDeg, candidate.centerLngDeg)) {
+          firstSatId = sat.id;
+          firstSatTarget = candidate;
+          break;
+        }
+      }
+      if (firstSatTarget) break;
+    }
+
+    // Pass 2: Any target within a satellite's 300x300 km footprint on land at exact T = now + 2 minutes
+    if (!firstSatTarget) {
+      for (const sat of shuffledSatellites) {
+        for (let k = 0; k < 40; k++) {
+          const candidate = buildTargetAtTime(sat, firstAcquisitionTimeMs);
+          if (isPointOnLand(candidate.centerLatDeg, candidate.centerLngDeg)) {
+            firstSatId = sat.id;
+            firstSatTarget = candidate;
+            break;
+          }
+        }
+        if (firstSatTarget) break;
+      }
+    }
 
     for (const sat of satellites) {
       for (let i = 0; i < 4; i++) {
         const id = crypto.randomUUID();
-        // Random acquisition timestamp within the next 3 hours
-        const targetTimeMs = nowMs + Math.floor(Math.random() * threeHoursMs);
-        const acquisitionTimestampIso = new Date(targetTimeMs).toISOString();
 
-        // Random square acquisition size between 5 km (5,000 m) and 50 km (50,000 m)
-        const sizeMeters = Math.round(5_000 + Math.random() * 45_000);
-        const widthM = sizeMeters;
-        const heightM = sizeMeters;
+        const target: CandidateTarget =
+          sat.id === firstSatId && i === 0 && firstSatTarget
+            ? firstSatTarget
+            : sampleLandAcquisitionForSatellite(
+                sat,
+                firstAcquisitionTimeMs + 5_000,
+                maxAcquisitionTimeMs
+              );
 
-        // Compute satellite sub-point at the planned acquisition time
-        const subpoint = computeSatelliteSubpoint(sat, targetTimeMs);
-
-        // Ensure the widthM x heightM square fits completely inside the 300x300 km coverage footprint
-        const maxCenterOffsetM = (COVERAGE_SIZE_METERS - sizeMeters) / 2;
-        const offsetNorthM = (Math.random() * 2 - 1) * maxCenterOffsetM;
-        const offsetEastM = (Math.random() * 2 - 1) * maxCenterOffsetM;
-
-        const deltaLatDeg = offsetNorthM / METERS_PER_DEG_LAT;
-        const halfHeightDeg = heightM / 2 / METERS_PER_DEG_LAT;
-        const maxAbsLat = Math.max(0, 89.9 - halfHeightDeg);
-        const centerLatDeg = Number(
-          Math.max(-maxAbsLat, Math.min(maxAbsLat, subpoint.lat + deltaLatDeg)).toFixed(6)
-        );
-
-        const cosLat = Math.max(0.1, Math.cos((centerLatDeg * Math.PI) / 180));
-        const metersPerDegLng = METERS_PER_DEG_LAT * cosLat;
-        const deltaLngDeg = offsetEastM / metersPerDegLng;
-        const centerLngDeg = Number(normalizeLongitude(subpoint.lng + deltaLngDeg).toFixed(6));
+        const acquisitionTimestampIso = new Date(target.targetTimeMs).toISOString();
 
         await pool.query(
           `INSERT INTO acquisition_plan (
              id,
              satellite_id,
+             user_id,
              acquisition_timestamp,
              duration_seconds,
              center_longitude_deg,
@@ -440,16 +598,17 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
              height_m,
              status,
              acquired_image
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             id,
             sat.id,
+            systemUserId,
             acquisitionTimestampIso,
             durationSeconds,
-            centerLngDeg,
-            centerLatDeg,
-            widthM,
-            heightM,
+            target.centerLngDeg,
+            target.centerLatDeg,
+            target.widthM,
+            target.heightM,
             'Pending',
             null,
           ]
@@ -465,6 +624,7 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
       `SELECT
          id,
          satellite_id,
+         user_id,
          acquisition_timestamp,
          duration_seconds,
          center_longitude_deg,

@@ -1,6 +1,6 @@
 # AGENTS.md — SatellitePlanner Environment & Operational Guide
 
-This document records the environment configuration, portable toolchain locations, database migration behavior, and startup/verification commands for future agent sessions.
+This document records the environment configuration, portable toolchain locations, database migration behavior, real-time notification pipeline, and startup/verification commands for future agent sessions.
 
 ---
 
@@ -23,11 +23,24 @@ $env:PATH = "$PWD\.tools\node-v22.14.0-win-x64;$env:PATH"
 ## 2. Database Migration & Seed Strategy
 
 - **Schema & Seed File**: `backend/src/db/init.sql`
-  - Creates table `geo_events` (`id UUID PRIMARY KEY`, `title VARCHAR(255)`, `latitude DECIMAL(9,6)`, `longitude DECIMAL(9,6)`, `intensity FLOAT`, `created_at TIMESTAMPTZ`).
-  - Seeds **16 globally distributed satellite ground station events**.
+  - Creates table `geo_events` (`id UUID PRIMARY KEY`, `title VARCHAR(255)`, `latitude DECIMAL(9,6)`, `longitude DECIMAL(9,6)`, `intensity FLOAT`, `created_at TIMESTAMPTZ`) and seeds **16 globally distributed satellite ground station events**.
+  - Creates table `satellite_fleet` and seeds **30 polar-orbiting satellites** (`SAT-POLAR-01` .. `SAT-POLAR-30`) evenly spaced every 6° of orbital plane longitude (`-90°` to `+84°`).
+  - Creates table `users` (`id UUID PRIMARY KEY`, `name VARCHAR(255) NOT NULL`) seeded with two rows: `system` (`c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01`) and `demo` (`c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02`).
+  - Creates table `acquisition_plan` (`id`, `satellite_id`, `user_id`, `acquisition_timestamp`, `duration_seconds`, `center_longitude_deg`, `center_latitude_deg`, `width_m`, `height_m`, `status`, `acquired_image`).
 - **Automatic Execution**:
   - **Local / Portable Mode**: On backend startup (`backend/src/db/index.ts`), `initDatabase()` attempts to connect to `DATABASE_URL` (`postgresql://postgres:postgres@localhost:5432/app_db`). If unreachable, it automatically activates an in-memory PostgreSQL fallback (`pg-mem`) and runs `backend/src/db/init.sql` automatically.
   - **Docker Mode**: `docker-compose.yml` mounts `./backend/src/db/init.sql` to `/docker-entrypoint-initdb.d/init.sql:ro` inside `postgres:16-alpine` and also runs `initDatabase()` idempotently (`CREATE TABLE IF NOT EXISTS` / `ON CONFLICT (id) DO NOTHING`) when the backend starts.
+
+---
+
+## 2b. Real-Time Acquisition Plan Notification Pipeline (NATS JetStream + SSE)
+
+- **Design Choice**: Instead of periodic frontend polling, real-time acquisition state changes (`Pending` → `Acquiring` → `Completed`) are pushed from the server using **NATS JetStream** + **Server-Sent Events (SSE)**.
+- **How It Works**:
+  1. **Event-Driven Executor (`backend/src/services/acquisitionExecutor.ts`)**: Sleeps until the next scheduled transition (`T - D/2` for `Acquiring`, `T + D/2` for `Completed` + `256×256` satellite image capture). Immediately after updating PostgreSQL, it calls `publishAcquisitionUpdated(updatedRow)`.
+  2. **NATS JetStream (`backend/src/events/nats.ts`)**: `initNats()` provisions `ACQUISITION_STREAM` (subject `acquisition.plan.>`). `publishAcquisitionUpdated()` publishes the updated row JSON to `acquisition.plan.updated`.
+  3. **JetStream Consumer & SSE Fan-Out (`backend/src/events/nats.ts` & `backend/src/controllers/geoEventsController.ts`)**: `startAcquisitionStreamConsumer()` consumes messages from `ACQUISITION_STREAM` (`acquisition.plan.updated`) and broadcasts each row as an SSE `data: <JSON>\n\n` frame to all clients connected to `GET /api/v1/acquisition-plan/stream` (with an automatic in-process fallback if NATS is temporarily unavailable).
+  4. **Frontend Subscription (`frontend/src/services/api.ts` & `frontend/src/App.tsx`)**: On mount, `App.tsx` opens an `EventSource` via `subscribeToAcquisitionUpdates()` and patches the updated `AcquisitionPlanRow` into React state (`setAcquisitionPlan`). Because the **Global Acquisition Plan** floating window, the **Satellite Information Panel**, and the **3D Globe** pulsing target halo derive their state via `useMemo` from `acquisitionPlan`, all open UI views update in real time without manual refresh.
 
 ---
 

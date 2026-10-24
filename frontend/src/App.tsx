@@ -6,8 +6,7 @@ import {
   PlusCircle,
   RefreshCw,
   MapPin,
-  Database,
-  Zap,
+  Camera,
   Globe2,
   Clock,
   RotateCcw,
@@ -17,6 +16,8 @@ import {
   Crosshair,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
+  User as UserIcon,
   X,
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
@@ -24,16 +25,20 @@ import {
   GeoEvent,
   SatelliteConfig,
   SatellitePosition,
+  UserRow,
   AcquisitionPlanRow,
   HealthResponse,
   fetchGeoEvents,
   createGeoEvent,
   fetchHealth,
   fetchSatellites,
+  fetchUsers,
   initializeAcquisitionPlan,
   fetchAcquisitionPlan,
   fetchAcquisitionById,
+  subscribeToAcquisitionUpdates,
   computeSatellitePosition,
+  getSatelliteColor,
 } from './services/api';
 import './App.css';
 
@@ -64,7 +69,11 @@ const DraggablePanel: React.FC<DraggablePanelProps> = ({
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     // Allow normal interaction with buttons, inputs, selects, or links inside the panel
-    if (target.closest('button, input, select, textarea, a, label')) {
+    if (
+      target.closest(
+        'button, input, select, textarea, a, label, .acq-plan-list-container, .acq-plan-list-item'
+      )
+    ) {
       return;
     }
     e.stopPropagation();
@@ -118,11 +127,27 @@ const DraggablePanel: React.FC<DraggablePanelProps> = ({
 export function App() {
   const [events, setEvents] = useState<GeoEvent[]>([]);
   const [satellites, setSatellites] = useState<SatelliteConfig[]>([]);
+  const [users, setUsers] = useState<UserRow[]>([
+    { id: 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01', name: 'system' },
+    { id: 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02', name: 'demo' },
+  ]);
   const [acquisitionPlan, setAcquisitionPlan] = useState<AcquisitionPlanRow[]>([]);
   const [selectedAcquisitionId, setSelectedAcquisitionId] = useState<string | null>(null);
   const [acquisitionFocusKey, setAcquisitionFocusKey] = useState<number>(0);
-  const [refreshingAcquisition, setRefreshingAcquisition] = useState<boolean>(false);
   const [showImagePopup, setShowImagePopup] = useState<boolean>(false);
+  const [showAcquisitionPlanWindow, setShowAcquisitionPlanWindow] = useState<boolean>(false);
+  const [planUserFilter, setPlanUserFilter] = useState<string>('ALL');
+
+  // Request Image Dialog state
+  const [showRequestImageDialog, setShowRequestImageDialog] = useState<boolean>(false);
+  const [isPickingGlobeLocation, setIsPickingGlobeLocation] = useState<boolean>(false);
+  const [requestLongitude, setRequestLongitude] = useState<string>('-3.7038');
+  const [requestLatitude, setRequestLatitude] = useState<string>('40.4168');
+  const [requestAreaSizeKm, setRequestAreaSizeKm] = useState<number>(25);
+  const [requestTimeMode, setRequestTimeMode] = useState<'ASAP' | 'ABSOLUTE'>('ASAP');
+  const [requestAbsoluteTime, setRequestAbsoluteTime] = useState<string>(() =>
+    new Date(Date.now() + 10 * 60_000).toISOString().slice(0, 16)
+  );
   const [selectedEvent, setSelectedEvent] = useState<GeoEvent | null>(null);
   const [selectedSatelliteId, setSelectedSatelliteId] = useState<string | null>(null);
   const [trackSelectedSatellite, setTrackSelectedSatellite] = useState<boolean>(false);
@@ -130,7 +155,7 @@ export function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
-  const [showGeoEvents, setShowGeoEvents] = useState<boolean>(false);
+  const [showGeoEvents] = useState<boolean>(false);
 
   // Simulation Clock State (anchors + speed factor 1x, 10x, 100x, 1000x)
   const [speedFactor, setSpeedFactor] = useState<number>(1);
@@ -210,18 +235,39 @@ export function App() {
     }
   }, []);
 
-  // Read satellite fleet configuration and initialize the 3-hour acquisition plan at startup
+  // Read satellite fleet, users, and initialize the 3-hour acquisition plan at startup
   const startupInitRef = useRef<boolean>(false);
   useEffect(() => {
     if (startupInitRef.current) return;
     startupInitRef.current = true;
 
-    Promise.all([fetchSatellites(), initializeAcquisitionPlan()])
-      .then(([satRes, planRes]) => {
+    Promise.all([
+      fetchSatellites(),
+      initializeAcquisitionPlan(),
+      fetchUsers().catch(() => null),
+    ])
+      .then(([satRes, planRes, usersRes]) => {
         setSatellites(satRes.data);
         setAcquisitionPlan(planRes.data);
+        if (usersRes && usersRes.data.length > 0) {
+          setUsers(usersRes.data);
+        }
       })
       .catch((err) => console.error('Failed to load satellite fleet or acquisition plan:', err));
+  }, []);
+
+  // Subscribe to real-time acquisition status updates via Server-Sent Events (NATS JetStream push)
+  useEffect(() => {
+    const unsubscribe = subscribeToAcquisitionUpdates((updatedRow) => {
+      setAcquisitionPlan((prev) => {
+        const exists = prev.some((r) => r.id === updatedRow.id);
+        if (!exists) return prev;
+        return prev.map((r) => (r.id === updatedRow.id ? updatedRow : r));
+      });
+    });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -229,6 +275,24 @@ export function App() {
     const interval = setInterval(loadData, 6000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  const getUserName = useCallback(
+    (userId?: string | null): string => {
+      if (!userId) return 'system';
+      const found = users.find((u) => u.id === userId);
+      return found ? found.name : 'system';
+    },
+    [users]
+  );
+
+  const handleRefreshFullAcquisitionPlan = useCallback(async () => {
+    try {
+      const latestPlanRes = await fetchAcquisitionPlan();
+      setAcquisitionPlan(latestPlanRes.data);
+    } catch (err) {
+      console.error('Failed to refresh acquisition plan list:', err);
+    }
+  }, []);
 
   const handlePublishEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,7 +361,6 @@ export function App() {
 
   // Fetch the latest fields and status of a specific acquisition from the backend
   const refreshAcquisitionRow = useCallback(async (acqId: string) => {
-    setRefreshingAcquisition(true);
     try {
       const res = await fetchAcquisitionById(acqId);
       const updated = res.data;
@@ -306,8 +369,6 @@ export function App() {
       );
     } catch (err) {
       console.error('Failed to refresh selected acquisition row:', err);
-    } finally {
-      setRefreshingAcquisition(false);
     }
   }, []);
 
@@ -316,6 +377,17 @@ export function App() {
     if (!activeAcquisitionId || !selectedSatelliteId) return;
     void refreshAcquisitionRow(activeAcquisitionId);
   }, [activeAcquisitionId, selectedSatelliteId, refreshAcquisitionRow]);
+
+  // Select a specific acquisition row: open its satellite info panel, select it in the dropdown, zoom & refresh status
+  const selectAcquisitionAndOpenPanel = useCallback(
+    (row: AcquisitionPlanRow) => {
+      setSelectedSatelliteId(row.satellite_id);
+      setSelectedAcquisitionId(row.id);
+      setAcquisitionFocusKey((prev) => prev + 1);
+      void refreshAcquisitionRow(row.id);
+    },
+    [refreshAcquisitionRow]
+  );
 
   // Find the acquisition in the plan closest to current real time (UTC), open the satellite dialog, and select it
   const handleSelectNextAcquisition = useCallback(async () => {
@@ -356,11 +428,8 @@ export function App() {
       }
     }
 
-    setSelectedSatelliteId(closestRow.satellite_id);
-    setSelectedAcquisitionId(closestRow.id);
-    setAcquisitionFocusKey((prev) => prev + 1);
-    void refreshAcquisitionRow(closestRow.id);
-  }, [acquisitionPlan, refreshAcquisitionRow]);
+    selectAcquisitionAndOpenPanel(closestRow);
+  }, [acquisitionPlan, selectAcquisitionAndOpenPanel]);
 
   // All acquisition plan rows sorted chronologically by acquisition_timestamp
   const sortedAcquisitionPlan = React.useMemo(() => {
@@ -371,6 +440,17 @@ export function App() {
       return diff !== 0 ? diff : a.id.localeCompare(b.id);
     });
   }, [acquisitionPlan]);
+
+  // Filtered acquisition plan rows for the "See Acquisition Plan" floating window
+  const filteredAcquisitionPlan = React.useMemo(() => {
+    if (planUserFilter === 'ALL') return sortedAcquisitionPlan;
+    const selectedUser = users.find((u) => u.id === planUserFilter || u.name === planUserFilter);
+    return sortedAcquisitionPlan.filter((row) => {
+      if (row.user_id && row.user_id === planUserFilter) return true;
+      if (selectedUser && getUserName(row.user_id) === selectedUser.name) return true;
+      return false;
+    });
+  }, [sortedAcquisitionPlan, planUserFilter, users, getUserName]);
 
   const currentGlobalAcquisitionIndex = React.useMemo(() => {
     if (!activeAcquisitionId || !selectedSatelliteId) return -1;
@@ -392,12 +472,9 @@ export function App() {
       }
 
       const targetRow = sortedAcquisitionPlan[targetIndex];
-      setSelectedSatelliteId(targetRow.satellite_id);
-      setSelectedAcquisitionId(targetRow.id);
-      setAcquisitionFocusKey((prev) => prev + 1);
-      void refreshAcquisitionRow(targetRow.id);
+      selectAcquisitionAndOpenPanel(targetRow);
     },
-    [sortedAcquisitionPlan, currentGlobalAcquisitionIndex, handleSelectNextAcquisition, refreshAcquisitionRow]
+    [sortedAcquisitionPlan, currentGlobalAcquisitionIndex, handleSelectNextAcquisition, selectAcquisitionAndOpenPanel]
   );
 
   // Close the image popup if the selected acquisition changes to one that is not completed
@@ -437,6 +514,12 @@ export function App() {
         onFocusAcquisition={() => {
           setAutoRotate(false);
         }}
+        isPickingLocation={isPickingGlobeLocation}
+        onPickLocation={(coords) => {
+          setRequestLatitude(coords.lat.toFixed(4));
+          setRequestLongitude(coords.lng.toFixed(4));
+          setIsPickingGlobeLocation(false);
+        }}
         getSimulatedTimeMs={getSimulatedTimeMs}
         autoRotate={autoRotate}
       />
@@ -473,20 +556,50 @@ export function App() {
             <Satellite size={14} />
             <span>FLEET: {satellites.length} SATS</span>
           </div>
-          <div className={`status-pill ${health?.services.postgresql.connected ? 'online' : 'offline'}`}>
-            <Database size={14} />
-            <span>
-              PG: {health?.services.postgresql.connected ? 'ONLINE' : 'CONNECTING'}
-            </span>
+
+          <div
+            className={`status-pill ${health?.status === 'ok' ? 'online' : 'offline'}`}
+            title={
+              health?.status === 'ok'
+                ? 'Backend API, PostgreSQL, and NATS JetStream are online'
+                : 'Connecting to backend services...'
+            }
+          >
+            <Activity size={14} />
+            <span>STATUS: {health?.status === 'ok' ? 'ONLINE' : 'DEGRADED'}</span>
           </div>
 
-          <div className={`status-pill ${health?.services.natsJetStream.connected ? 'online' : 'offline'}`}>
-            <Zap size={14} />
-            <span>
-              NATS JS: {health?.services.natsJetStream.stream || 'GEO_STREAM'} (
-              {health?.services.natsJetStream.streamMessages ?? 0} msgs)
-            </span>
-          </div>
+          <button
+            type="button"
+            className={`hud-btn request-image-btn ${showRequestImageDialog ? 'active' : ''}`}
+            onClick={() => {
+              const nextOpen = !showRequestImageDialog;
+              setShowRequestImageDialog(nextOpen);
+              if (!nextOpen) {
+                setIsPickingGlobeLocation(false);
+              }
+            }}
+            title="Open dialog to request a new satellite image capture"
+          >
+            <Camera size={15} />
+            <span>Request Image</span>
+          </button>
+
+          <button
+            type="button"
+            className={`hud-btn see-plan-btn ${showAcquisitionPlanWindow ? 'active' : ''}`}
+            onClick={() => {
+              const nextOpen = !showAcquisitionPlanWindow;
+              setShowAcquisitionPlanWindow(nextOpen);
+              if (nextOpen) {
+                void handleRefreshFullAcquisitionPlan();
+              }
+            }}
+            title="Open floating Acquisition Plan table sorted by time and filterable by user"
+          >
+            <ClipboardList size={15} />
+            <span>See Acquisition Plan</span>
+          </button>
 
           <div className="acq-nav-group">
             <button
@@ -552,6 +665,270 @@ export function App() {
           )}
         </div>
       </header>
+
+      {/* Draggable Floating Request Image Dialog */}
+      {showRequestImageDialog && (
+        <DraggablePanel
+          className="request-image-dialog glass-card"
+          initialPosition={{ x: 430, y: 96 }}
+          ariaLabel="Request Image Acquisition Dialog"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              <Camera size={16} className="accent-cyan" />
+              <span className="tooltip-tag">REQUEST IMAGE ACQUISITION</span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => {
+                  setShowRequestImageDialog(false);
+                  setIsPickingGlobeLocation(false);
+                }}
+                aria-label="Close request image dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <form
+            className="request-image-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Action on submit not implemented yet per instructions
+            }}
+          >
+            {/* 1. Longitude & Latitude + Pick on Globe Button */}
+            <div className="req-section">
+              <span className="req-section-label">TARGET LOCATION (LONGITUDE & LATITUDE)</span>
+              <div className="req-coords-row">
+                <div className="field-group">
+                  <label htmlFor="req-lng-input">Longitude (°)</label>
+                  <input
+                    id="req-lng-input"
+                    type="number"
+                    step="0.0001"
+                    min="-180"
+                    max="180"
+                    value={requestLongitude}
+                    onChange={(e) => setRequestLongitude(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="req-lat-input">Latitude (°)</label>
+                  <input
+                    id="req-lat-input"
+                    type="number"
+                    step="0.0001"
+                    min="-90"
+                    max="90"
+                    value={requestLatitude}
+                    onChange={(e) => setRequestLatitude(e.target.value)}
+                    required
+                  />
+                </div>
+                <button
+                  type="button"
+                  className={`pick-globe-btn ${isPickingGlobeLocation ? 'active' : ''}`}
+                  onClick={() => setIsPickingGlobeLocation((prev) => !prev)}
+                  title="Click on the 3D globe to select target longitude and latitude"
+                >
+                  <MapPin size={14} />
+                  <span>{isPickingGlobeLocation ? 'Click Globe...' : 'Pick on Globe'}</span>
+                </button>
+              </div>
+              {isPickingGlobeLocation && (
+                <div className="pick-globe-hint">
+                  Click any location on the 3D globe to set the coordinates.
+                </div>
+              )}
+            </div>
+
+            {/* 2. Predefined Square Area Size Dropdown */}
+            <div className="req-section">
+              <label htmlFor="req-area-size-select" className="req-section-label">
+                CAPTURE AREA SIZE (SQUARE FOOTPRINT)
+              </label>
+              <select
+                id="req-area-size-select"
+                className="req-select"
+                value={requestAreaSizeKm}
+                onChange={(e) => setRequestAreaSizeKm(Number(e.target.value))}
+              >
+                <option value={5}>5 × 5 km (25 km² — High Detail)</option>
+                <option value={10}>10 × 10 km (100 km²)</option>
+                <option value={15}>15 × 15 km (225 km²)</option>
+                <option value={25}>25 × 25 km (625 km² — Standard)</option>
+                <option value={35}>35 × 35 km (1,225 km²)</option>
+                <option value={50}>50 × 50 km (2,500 km² — Wide Swath)</option>
+              </select>
+            </div>
+
+            {/* 3. Preferred Capture Time */}
+            <div className="req-section">
+              <span className="req-section-label">PREFERRED CAPTURE TIME</span>
+              <div className="req-time-options">
+                <label
+                  className={`req-radio-option ${requestTimeMode === 'ASAP' ? 'selected' : ''}`}
+                >
+                  <input
+                    type="radio"
+                    name="requestTimeMode"
+                    value="ASAP"
+                    checked={requestTimeMode === 'ASAP'}
+                    onChange={() => setRequestTimeMode('ASAP')}
+                  />
+                  <span>As soon as possible</span>
+                </label>
+
+                <label
+                  className={`req-radio-option ${requestTimeMode === 'ABSOLUTE' ? 'selected' : ''}`}
+                >
+                  <input
+                    type="radio"
+                    name="requestTimeMode"
+                    value="ABSOLUTE"
+                    checked={requestTimeMode === 'ABSOLUTE'}
+                    onChange={() => setRequestTimeMode('ABSOLUTE')}
+                  />
+                  <span>Absolute time (UTC)</span>
+                </label>
+              </div>
+
+              {requestTimeMode === 'ABSOLUTE' && (
+                <div className="field-group req-datetime-group">
+                  <label htmlFor="req-datetime-input">Target Capture Timestamp (UTC)</label>
+                  <input
+                    id="req-datetime-input"
+                    type="datetime-local"
+                    step="1"
+                    value={requestAbsoluteTime}
+                    onChange={(e) => setRequestAbsoluteTime(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* 4. Submit Request Button */}
+            <button type="submit" className="submit-btn req-submit-btn">
+              <Camera size={15} />
+              <span>Submit Request</span>
+            </button>
+          </form>
+        </DraggablePanel>
+      )}
+
+      {/* Draggable Floating Acquisition Plan Window */}
+      {showAcquisitionPlanWindow && (
+        <DraggablePanel
+          className="acquisition-plan-window glass-card"
+          initialPosition={{ x: 24, y: 96 }}
+          ariaLabel="Acquisition Plan Window"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              <ClipboardList size={16} className="accent-cyan" />
+              <span className="tooltip-tag">
+                GLOBAL ACQUISITION PLAN ({filteredAcquisitionPlan.length} ROWS)
+              </span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setShowAcquisitionPlanWindow(false)}
+                aria-label="Close acquisition plan window"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div className="acq-plan-filter-bar">
+            <label htmlFor="acq-user-filter-select" className="acq-filter-label">
+              <UserIcon size={13} />
+              <span>Filter by User:</span>
+            </label>
+            <select
+              id="acq-user-filter-select"
+              className="acq-user-filter-select"
+              value={planUserFilter}
+              onChange={(e) => setPlanUserFilter(e.target.value)}
+            >
+              <option value="ALL">All Users ({sortedAcquisitionPlan.length})</option>
+              {users.map((u) => {
+                const count = sortedAcquisitionPlan.filter(
+                  (r) => r.user_id === u.id || getUserName(r.user_id) === u.name
+                ).length;
+                return (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="acq-plan-list-container">
+            {filteredAcquisitionPlan.length === 0 ? (
+              <div className="acq-empty">No acquisition plan rows match the selected user filter.</div>
+            ) : (
+              filteredAcquisitionPlan.map((row, idx) => {
+                const isSelected = activeSatellite?.id === row.satellite_id && activeAcquisitionRow?.id === row.id;
+                const satCfg = satellites.find((s) => s.id === row.satellite_id);
+                const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
+                const shortSat = row.satellite_id.slice(-4).toUpperCase();
+                const utcStr = formatUtcTimestamp(new Date(row.acquisition_timestamp).getTime());
+                const sizeKm = (row.width_m / 1000).toFixed(1);
+                const userName = getUserName(row.user_id);
+
+                return (
+                  <div
+                    key={row.id}
+                    className={`acq-plan-list-item ${isSelected ? 'selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => selectAcquisitionAndOpenPanel(row)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        selectAcquisitionAndOpenPanel(row);
+                      }
+                    }}
+                  >
+                    <div className="acq-list-item-top">
+                      <div className="acq-list-sat-group">
+                        <span className="acq-list-index">#{idx + 1}</span>
+                        <span
+                          className="acq-list-sat-dot"
+                          style={{ backgroundColor: satColor, boxShadow: `0 0 8px ${satColor}` }}
+                        />
+                        <span className="acq-list-sat-code">SAT-{shortSat}</span>
+                        <span className="acq-list-user-pill">{userName}</span>
+                      </div>
+                      <span className={`acq-status-badge ${row.status.toLowerCase()}`}>
+                        {row.status}
+                      </span>
+                    </div>
+                    <div className="acq-list-item-bottom">
+                      <span className="acq-list-time">{utcStr}</span>
+                      <span className="acq-list-coords">
+                        {sizeKm}×{sizeKm} km • ({row.center_latitude_deg.toFixed(2)}°,{' '}
+                        {row.center_longitude_deg.toFixed(2)}°)
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </DraggablePanel>
+      )}
 
       {/* Draggable Orbital Time & Simulation Speed Control Popup Panel */}
       <DraggablePanel
@@ -890,24 +1267,15 @@ export function App() {
                           {(activeAcquisitionRow.height_m / 1000).toFixed(1)} km
                         </span>
                       </div>
+                      <div className="full-span-row">
+                        <span className="label">USER</span>
+                        <span className="mono user-badge-value">
+                          {getUserName(activeAcquisitionRow.user_id)}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="acq-actions-row">
-                      <button
-                        type="button"
-                        className="acq-action-btn refresh"
-                        onClick={() => {
-                          if (activeAcquisitionRow) {
-                            void refreshAcquisitionRow(activeAcquisitionRow.id);
-                          }
-                        }}
-                        disabled={refreshingAcquisition}
-                        title="Fetch current status and fields for this acquisition from the backend"
-                      >
-                        <RefreshCw size={13} className={refreshingAcquisition ? 'spin' : ''} />
-                        <span>Refresh</span>
-                      </button>
-
                       <button
                         type="button"
                         className={`acq-action-btn show-image ${isAcquisitionCompleted ? 'enabled' : ''}`}

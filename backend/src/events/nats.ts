@@ -9,6 +9,7 @@ import {
   StorageType,
   StringCodec,
 } from 'nats';
+import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
 import { getPool } from '../db';
@@ -22,6 +23,20 @@ export interface GeoEventPayload {
   created_at?: string;
 }
 
+export interface AcquisitionPlanUpdatePayload {
+  id: string;
+  satellite_id: string;
+  user_id: string;
+  acquisition_timestamp: string;
+  duration_seconds: number;
+  center_longitude_deg: number;
+  center_latitude_deg: number;
+  width_m: number;
+  height_m: number;
+  status: string;
+  acquired_image: string | null;
+}
+
 let nc: NatsConnection | null = null;
 let js: JetStreamClient | null = null;
 let jsm: JetStreamManager | null = null;
@@ -29,6 +44,40 @@ const sc = StringCodec();
 
 let publishedCount = 0;
 let consumedCount = 0;
+
+// Connected Server-Sent Events (SSE) clients for real-time acquisition plan updates
+const acquisitionSseClients = new Set<Response>();
+
+export function registerAcquisitionSseClient(res: Response): () => void {
+  acquisitionSseClients.add(res);
+  res.write(`: connected to NATS JetStream acquisition stream (${config.acquisitionStreamName})\n\n`);
+
+  const keepAliveTimer = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      clearInterval(keepAliveTimer);
+      acquisitionSseClients.delete(res);
+    }
+  }, 20_000);
+
+  return () => {
+    clearInterval(keepAliveTimer);
+    acquisitionSseClients.delete(res);
+  };
+}
+
+function broadcastAcquisitionUpdateToSseClients(payload: AcquisitionPlanUpdatePayload): void {
+  if (acquisitionSseClients.size === 0) return;
+  const sseData = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of acquisitionSseClients) {
+    try {
+      clientRes.write(sseData);
+    } catch {
+      acquisitionSseClients.delete(clientRes);
+    }
+  }
+}
 
 export async function initNatsJetStream(): Promise<void> {
   nc = await connect({
@@ -43,7 +92,7 @@ export async function initNatsJetStream(): Promise<void> {
   jsm = await nc.jetstreamManager();
   js = nc.jetstream();
 
-  // Ensure Stream exists (GEO_STREAM targeting geo.events.>)
+  // 1. Ensure GEO_STREAM exists (targeting geo.events.>)
   try {
     await jsm.streams.info(config.streamName);
     console.log(`[NATS] JetStream stream "${config.streamName}" already exists.`);
@@ -55,10 +104,12 @@ export async function initNatsJetStream(): Promise<void> {
       storage: StorageType.File,
       max_msgs: 100000,
     });
-    console.log(`[NATS] Created JetStream stream "${config.streamName}" for subjects ${config.streamSubjects.join(', ')}`);
+    console.log(
+      `[NATS] Created JetStream stream "${config.streamName}" for subjects ${config.streamSubjects.join(', ')}`
+    );
   }
 
-  // Ensure Durable Consumer exists
+  // Ensure Durable Consumer for geo.events.created exists
   try {
     await jsm.consumers.info(config.streamName, config.consumerDurableName);
   } catch {
@@ -68,12 +119,35 @@ export async function initNatsJetStream(): Promise<void> {
       deliver_policy: DeliverPolicy.All,
       filter_subject: config.eventSubjectCreated,
     });
-    console.log(`[NATS] Created durable consumer "${config.consumerDurableName}" on stream "${config.streamName}"`);
+    console.log(
+      `[NATS] Created durable consumer "${config.consumerDurableName}" on stream "${config.streamName}"`
+    );
   }
 
-  // Start background consumer loop
+  // 2. Ensure ACQUISITION_STREAM exists (targeting acquisition.plan.>)
+  try {
+    await jsm.streams.info(config.acquisitionStreamName);
+    console.log(`[NATS] JetStream stream "${config.acquisitionStreamName}" already exists.`);
+  } catch {
+    await jsm.streams.add({
+      name: config.acquisitionStreamName,
+      subjects: config.acquisitionStreamSubjects,
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      max_msgs: 20000,
+    });
+    console.log(
+      `[NATS] Created JetStream stream "${config.acquisitionStreamName}" for subjects ${config.acquisitionStreamSubjects.join(', ')}`
+    );
+  }
+
+  // Start background consumers
   startDurableConsumer().catch((err) => {
     console.error('[NATS] Durable consumer error:', err);
+  });
+
+  startAcquisitionStreamConsumer().catch((err) => {
+    console.error('[NATS] Acquisition stream consumer error:', err);
   });
 }
 
@@ -109,13 +183,42 @@ export async function publishGeoEventCreated(payload: GeoEventPayload): Promise<
   };
 }
 
+/**
+ * Publishes an acquisition plan row status/image transition to NATS JetStream (acquisition.plan.updated).
+ * If NATS is temporarily disconnected, still broadcasts directly to connected SSE clients as fallback.
+ */
+export async function publishAcquisitionUpdated(
+  payload: AcquisitionPlanUpdatePayload
+): Promise<void> {
+  if (!js) {
+    broadcastAcquisitionUpdateToSseClients(payload);
+    return;
+  }
+
+  try {
+    const pubAck = await js.publish(
+      config.acquisitionSubjectUpdated,
+      sc.encode(JSON.stringify(payload))
+    );
+    publishedCount++;
+    console.log(
+      `[NATS Publisher] Published acquisition update (${payload.id} -> ${payload.status}) to ${config.acquisitionSubjectUpdated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
+    );
+  } catch (err) {
+    console.warn('[NATS Publisher] Failed to publish acquisition update to JetStream, using direct SSE broadcast:', err);
+    broadcastAcquisitionUpdateToSseClients(payload);
+  }
+}
+
 async function startDurableConsumer(): Promise<void> {
   if (!js) return;
 
   const consumer = await js.consumers.get(config.streamName, config.consumerDurableName);
   const messages = await consumer.consume();
 
-  console.log(`[NATS Consumer] Listening for "${config.eventSubjectCreated}" messages on durable consumer "${config.consumerDurableName}"...`);
+  console.log(
+    `[NATS Consumer] Listening for "${config.eventSubjectCreated}" messages on durable consumer "${config.consumerDurableName}"...`
+  );
 
   for await (const msg of messages) {
     try {
@@ -132,10 +235,46 @@ async function startDurableConsumer(): Promise<void> {
 
       msg.ack();
       consumedCount++;
-      console.log(`[NATS Consumer] Persisted event "${data.title}" (${data.id}) to PostgreSQL [seq=${msg.seq}]`);
+      console.log(
+        `[NATS Consumer] Persisted event "${data.title}" (${data.id}) to PostgreSQL [seq=${msg.seq}]`
+      );
     } catch (err) {
       console.error('[NATS Consumer] Failed to process message:', err);
       msg.nak(5000);
+    }
+  }
+}
+
+/**
+ * Consumes real-time "acquisition.plan.updated" messages from NATS JetStream (ACQUISITION_STREAM)
+ * and pushes them immediately to all subscribed frontend SSE clients.
+ */
+async function startAcquisitionStreamConsumer(): Promise<void> {
+  if (!js || !jsm) return;
+
+  const consumerInfo = await jsm.consumers.add(config.acquisitionStreamName, {
+    ack_policy: AckPolicy.Explicit,
+    deliver_policy: DeliverPolicy.New,
+    filter_subject: config.acquisitionSubjectUpdated,
+  });
+
+  const consumer = await js.consumers.get(config.acquisitionStreamName, consumerInfo.name);
+  const messages = await consumer.consume();
+
+  console.log(
+    `[NATS Consumer] Listening for "${config.acquisitionSubjectUpdated}" messages on stream "${config.acquisitionStreamName}" for SSE push...`
+  );
+
+  for await (const msg of messages) {
+    try {
+      const rawData = sc.decode(msg.data);
+      const payload: AcquisitionPlanUpdatePayload = JSON.parse(rawData);
+      msg.ack();
+      consumedCount++;
+      broadcastAcquisitionUpdateToSseClients(payload);
+    } catch (err) {
+      console.error('[NATS Consumer] Failed to process acquisition update message:', err);
+      msg.nak(2000);
     }
   }
 }
