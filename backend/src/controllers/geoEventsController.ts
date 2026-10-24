@@ -150,3 +150,43 @@ export async function getMetrics(_req: Request, res: Response): Promise<void> {
     });
   }
 }
+
+export async function getSatelliteFleet(_req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const rowsResult = await pool.query(
+      `SELECT
+         id,
+         orbit_altitude_km,
+         orbit_orientation_deg,
+         reference_latitude_deg,
+         reference_direction,
+         reference_timestamp
+       FROM satellite_fleet
+       ORDER BY orbit_orientation_deg ASC`
+    );
+
+    const data = rowsResult.rows.map((row) => ({
+      id: row.id,
+      orbit_altitude_km: Number(row.orbit_altitude_km),
+      orbit_orientation_deg: Number(row.orbit_orientation_deg),
+      reference_latitude_deg: Number(row.reference_latitude_deg),
+      reference_direction: Number(row.reference_direction) as 1 | -1,
+      reference_timestamp:
+        row.reference_timestamp instanceof Date
+          ? row.reference_timestamp.toISOString()
+          : String(row.reference_timestamp),
+    }));
+
+    res.status(200).json({
+      data,
+      total: data.length,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error fetching satellite_fleet:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve satellite fleet configuration',
+      details: error?.message,
+    });
+  }
+}

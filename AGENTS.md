@@ -58,11 +58,13 @@ Set-Location ..
 Starts NATS JetStream (`:4222` / `:8222`), Backend API (`:3001`), and Frontend Vite Dev Server (`:5173`) together:
 
 ```powershell
-.\.tools\node-v22.14.0-win-x64\node.exe .\run-stack.mjs
-```
-Or via the PowerShell helper script:
-```powershell
+# Start all services:
 powershell -ExecutionPolicy Bypass -File .\start-local.ps1
+# (Or double-click start-local.bat / run: .\.tools\node-v22.14.0-win-x64\node.exe .\run-stack.mjs)
+
+# Stop all services cleanly:
+powershell -ExecutionPolicy Bypass -File .\stop-local.ps1
+# (Or double-click stop-local.bat)
 ```
 
 ### Option B: Individual Service Startup Commands (Portable Mode)

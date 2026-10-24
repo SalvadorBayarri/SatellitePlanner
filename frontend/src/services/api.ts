@@ -44,6 +44,173 @@ export interface CreateGeoEventInput {
   intensity: number;
 }
 
+export interface SatelliteConfig {
+  id: string;
+  orbit_altitude_km: number;
+  orbit_orientation_deg: number;
+  reference_latitude_deg: number;
+  reference_direction: 1 | -1;
+  reference_timestamp: string;
+}
+
+export interface SatelliteFleetResponse {
+  data: SatelliteConfig[];
+  total: number;
+}
+
+export interface SatellitePosition extends SatelliteConfig {
+  currentLat: number;
+  currentLng: number;
+  currentDirection: 1 | -1;
+  headingDeg: number;
+  elapsedMinutes: number;
+  color: string;
+}
+
+const EARTH_RADIUS_KM = 6371;
+const ORBIT_PERIOD_MINUTES = 97;
+
+export const SATELLITE_PALETTE: string[] = [
+  '#f43f5e', '#fb7185', '#e879f9', '#c084fc', '#a78bfa',
+  '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee', '#2dd4bf',
+  '#34d399', '#4ade80', '#a3e635', '#facc15', '#fbbf24',
+  '#fb923c', '#f87171', '#f472b6', '#d946ef', '#a855f7',
+  '#6366f1', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6',
+  '#10b981', '#22c55e', '#84cc16', '#eab308', '#f97316',
+];
+
+export function getSatelliteColor(sat: SatelliteConfig, indexHint?: number): string {
+  if (typeof indexHint === 'number' && indexHint >= 0) {
+    return SATELLITE_PALETTE[indexHint % SATELLITE_PALETTE.length];
+  }
+  const suffix = parseInt(sat.id.slice(-2), 10);
+  if (!Number.isNaN(suffix) && suffix >= 1) {
+    return SATELLITE_PALETTE[(suffix - 1) % SATELLITE_PALETTE.length];
+  }
+  const planeIdx = Math.round((sat.orbit_orientation_deg + 180) / 12);
+  return SATELLITE_PALETTE[Math.abs(planeIdx) % SATELLITE_PALETTE.length];
+}
+
+/**
+ * Normalizes any angle in degrees into [-180, +180].
+ */
+export function normalizeLongitude(deg: number): number {
+  const wrapped = ((((deg + 180) % 360) + 360) % 360) - 180;
+  return wrapped === -180 ? 180 : wrapped;
+}
+
+/**
+ * Extrapolates a polar-orbiting satellite's current latitude, longitude, and motion heading from its reference state:
+ *  - Unwrapped Latitude = reference_latitude_deg + reference_direction * 360 * (elapsedMinutes / 97)
+ *  - Base Longitude = orbit_orientation_deg - 24.5 * (elapsedMinutes / 97)
+ *  - Normalized to [-90, +90] for latitude (with polar reflection and 180° meridian flip over the poles)
+ *    and [-180, +180] for longitude.
+ */
+export function computeSatellitePosition(sat: SatelliteConfig, simTimeMs: number = Date.now()): SatellitePosition {
+  const refMs = new Date(sat.reference_timestamp).getTime();
+  const elapsedMinutes = (simTimeMs - refMs) / 60_000;
+  const orbitsElapsed = elapsedMinutes / ORBIT_PERIOD_MINUTES;
+
+  const rawLat = sat.reference_latitude_deg + sat.reference_direction * 360 * orbitsElapsed;
+  const rawLng = sat.orbit_orientation_deg - 24.5 * orbitsElapsed;
+
+  // Fold rawLat into [-180, +180] first
+  const wrappedLat = ((((rawLat + 180) % 360) + 360) % 360) - 180;
+
+  let currentLat: number;
+  let currentDirection: 1 | -1 = sat.reference_direction;
+  let poleCrossFlip = 0;
+
+  if (wrappedLat > 90) {
+    currentLat = 180 - wrappedLat;
+    currentDirection = (sat.reference_direction * -1) as 1 | -1;
+    poleCrossFlip = 180;
+  } else if (wrappedLat < -90) {
+    currentLat = -180 - wrappedLat;
+    currentDirection = (sat.reference_direction * -1) as 1 | -1;
+    poleCrossFlip = 180;
+  } else {
+    currentLat = wrappedLat;
+  }
+
+  const currentLng = normalizeLongitude(rawLng + poleCrossFlip);
+
+  // Compute local tangent velocity vector (East, North) to orient the 3D direction arrow
+  const latRad = (currentLat * Math.PI) / 180;
+  const vNorth = currentDirection * 360;
+  const vEast = -24.5 * Math.max(0.05, Math.cos(latRad));
+  // Angle in degrees counter-clockwise from North (+Y in local surface frame)
+  const headingDeg = (Math.atan2(-vEast, vNorth) * 180) / Math.PI;
+
+  return {
+    ...sat,
+    currentLat,
+    currentLng,
+    currentDirection,
+    headingDeg,
+    elapsedMinutes,
+    color: getSatelliteColor(sat),
+  };
+}
+
+export function getGlobeAltitudeRatio(altitudeKm: number): number {
+  return altitudeKm / EARTH_RADIUS_KM;
+}
+
+/**
+ * Computes the astronomical subsolar point (latitude and longitude where the Sun is directly overhead)
+ * for any UTC timestamp (ms), accounting for Earth's axial tilt (solar declination), equation of time,
+ * and UTC solar hour angle.
+ */
+export function computeSubsolarPoint(timeMs: number): { lat: number; lng: number } {
+  // Days since J2000.0 epoch (2000-01-01T12:00:00Z)
+  const jd = timeMs / 86_400_000 + 2440587.5;
+  const n = jd - 2451545.0;
+
+  // Mean longitude of the Sun (deg)
+  const L = ((280.460 + 0.9856474 * n) % 360 + 360) % 360;
+  // Mean anomaly of the Sun (deg -> rad)
+  const gDeg = ((357.528 + 0.9856003 * n) % 360 + 360) % 360;
+  const gRad = (gDeg * Math.PI) / 180;
+
+  // Ecliptic longitude of the Sun (deg -> rad)
+  const lambdaDeg = L + 1.915 * Math.sin(gRad) + 0.020 * Math.sin(2 * gRad);
+  const lambdaRad = (lambdaDeg * Math.PI) / 180;
+
+  // Obliquity of the ecliptic (deg -> rad)
+  const epsilonDeg = 23.439 - 0.0000004 * n;
+  const epsilonRad = (epsilonDeg * Math.PI) / 180;
+
+  // Solar declination = subsolar latitude (deg)
+  const sinDec = Math.sin(epsilonRad) * Math.sin(lambdaRad);
+  const subsolarLat = (Math.asin(Math.max(-1, Math.min(1, sinDec))) * 180) / Math.PI;
+
+  // Right ascension (deg) & Equation of Time (minutes)
+  const raDeg =
+    ((Math.atan2(Math.cos(epsilonRad) * Math.sin(lambdaRad), Math.cos(lambdaRad)) * 180) /
+      Math.PI +
+      360) %
+    360;
+  let deltaRa = L - raDeg;
+  if (deltaRa > 180) deltaRa -= 360;
+  if (deltaRa < -180) deltaRa += 360;
+  const equationOfTimeMinutes = 4 * deltaRa;
+
+  // Fractional UTC day in minutes [0, 1440)
+  const utcDate = new Date(timeMs);
+  const utcMinutes =
+    utcDate.getUTCHours() * 60 +
+    utcDate.getUTCMinutes() +
+    utcDate.getUTCSeconds() / 60 +
+    utcDate.getUTCMilliseconds() / 60_000;
+
+  // Subsolar longitude: at 12:00 solar time, the Sun is over 0° (Greenwich), moving west 15°/hour
+  const rawSubsolarLng = -15 * ((utcMinutes - 720 + equationOfTimeMinutes) / 60);
+  const subsolarLng = normalizeLongitude(rawSubsolarLng);
+
+  return { lat: subsolarLat, lng: subsolarLng };
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api/v1';
 
 export async function fetchGeoEvents(page = 1, limit = 100): Promise<GeoEventsResponse> {
@@ -76,6 +243,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE_URL}/health`);
   if (!response.ok) {
     throw new Error(`Health check failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchSatellites(): Promise<SatelliteFleetResponse> {
+  const response = await fetch(`${API_BASE_URL}/satellites`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch satellite fleet: ${response.statusText}`);
   }
   return response.json();
 }

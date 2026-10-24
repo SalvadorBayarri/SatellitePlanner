@@ -120,6 +120,16 @@ body,
   border-color: rgba(16, 185, 129, 0.35);
 }
 
+.status-pill.clickable-pill {
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.status-pill.clickable-pill:hover {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: var(--accent-emerald);
+}
+
 .status-pill.offline {
   color: var(--accent-amber);
   border-color: rgba(245, 158, 11, 0.35);
@@ -145,6 +155,68 @@ body,
   background: rgba(56, 189, 248, 0.18);
   border-color: var(--accent-cyan);
   color: #ffffff;
+}
+
+/* HUD Toggle Switch */
+.hud-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.18s ease;
+}
+
+.hud-switch:hover {
+  border-color: rgba(56, 189, 248, 0.5);
+}
+
+.hud-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  transition: all 0.2s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #94a3b8;
+  border-radius: 50%;
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.hud-switch input:checked + .switch-track {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: var(--accent-cyan);
+}
+
+.hud-switch input:checked + .switch-track .switch-thumb {
+  transform: translateX(14px);
+  background: var(--accent-cyan);
+}
+
+.switch-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 .spin {
@@ -362,6 +434,238 @@ body,
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* Draggable Popup Panels */
+.draggable-panel {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.draggable-panel.is-dragging {
+  cursor: grabbing;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.8);
+  z-index: 30 !important;
+}
+
+.drag-handle-header {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drag-grip-icon {
+  color: var(--text-secondary);
+  opacity: 0.65;
+}
+
+.draggable-panel:hover .drag-grip-icon {
+  opacity: 1;
+  color: var(--accent-cyan);
+}
+
+/* Orbital Time & Speed Control Popup Panel */
+.time-control-panel {
+  position: absolute;
+  top: 96px;
+  right: 20px;
+  width: 340px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.time-readouts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(2, 6, 23, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.time-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.time-row.simulated {
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  padding-top: 6px;
+}
+
+.time-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.time-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.time-value.highlight {
+  color: var(--accent-cyan);
+}
+
+.time-controls-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.speed-select-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.speed-select-group label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.speed-select {
+  width: 100%;
+  background: rgba(2, 6, 23, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: #f8fafc;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+
+.speed-select:focus {
+  border-color: var(--accent-cyan);
+}
+
+.reset-time-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+
+.reset-time-btn:hover {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--accent-cyan);
+}
+
+/* Persistent Selected Satellite Info Popup */
+.selected-satellite-card {
+  position: absolute;
+  right: 20px;
+  top: 295px;
+  width: 340px;
+  z-index: 15;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--accent-amber);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+}
+
+.selected-satellite-card h3 {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: #ffffff;
+}
+
+.sat-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.sat-color-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.sat-id-select {
+  flex: 1;
+  background: rgba(2, 6, 23, 0.85);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #ffffff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.16s ease;
+}
+
+.sat-id-select:hover,
+.sat-id-select:focus {
+  border-color: var(--accent-cyan) !important;
+}
+
+.sat-track-toggle-row {
+  margin-top: 4px;
+  margin-bottom: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.sat-track-switch {
+  width: 100%;
+  justify-content: space-between;
+  padding: 7px 12px;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.tooltip-tag.sat-tag {
+  color: var(--accent-amber);
+}
+
+.tooltip-grid .sat-highlight {
+  color: var(--accent-amber);
 }
 
 /* Selected 3D Marker Tooltip Card */

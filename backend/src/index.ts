@@ -30,6 +30,7 @@ app.get('/', (_req, res) => {
       health: '/api/v1/health',
       metrics: '/api/v1/metrics',
       geoEvents: '/api/v1/geo-events',
+      satellites: '/api/v1/satellites',
     },
   });
 });

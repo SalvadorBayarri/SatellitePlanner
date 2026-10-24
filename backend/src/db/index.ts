@@ -69,25 +69,36 @@ async function runMigrations(): Promise<void> {
     await pool.query(rawSql);
     console.log('[DB] Executed init.sql schema and seed data on PostgreSQL.');
   } else {
-    // Normalize DECIMAL(9, 6) and INTERVAL expressions for pg-mem compatibility while keeping identical schema and 16 records
+    // Normalize DECIMAL(9, 6) and INTERVAL expressions for pg-mem compatibility while keeping identical schema and seed records
+    const nowIso = new Date().toISOString();
     const normalizedSql = rawSql
       .replace(/DECIMAL\(\d+,\s*\d+\)/gi, 'DECIMAL')
       .replace(/CURRENT_TIMESTAMP - INTERVAL '(\d+) minutes'/g, (_match, mins) => {
         const ts = new Date(Date.now() - Number(mins) * 60_000).toISOString();
         return `'${ts}'`;
-      });
+      })
+      .replace(/,\s*CURRENT_TIMESTAMP\)/g, `, '${nowIso}')`);
     await pool.query(normalizedSql);
     console.log('[DB] Executed init.sql schema and seed data on pg-mem PostgreSQL engine.');
   }
 }
 
-export async function checkDbHealth(): Promise<{ connected: boolean; mode: string; totalEvents?: number }> {
+export async function checkDbHealth(): Promise<{
+  connected: boolean;
+  mode: string;
+  totalEvents?: number;
+  totalSatellites?: number;
+}> {
   try {
-    const result = await pool.query('SELECT COUNT(*)::int AS count FROM geo_events');
+    const [eventsRes, satRes] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int AS count FROM geo_events'),
+      pool.query('SELECT COUNT(*)::int AS count FROM satellite_fleet'),
+    ]);
     return {
       connected: true,
       mode: dbMode,
-      totalEvents: result.rows[0]?.count ?? 0,
+      totalEvents: eventsRes.rows[0]?.count ?? 0,
+      totalSatellites: satRes.rows[0]?.count ?? 0,
     };
   } catch (error) {
     return {
