@@ -5,9 +5,11 @@ import {
   GeoEvent,
   SatelliteConfig,
   SatellitePosition,
+  AcquisitionPlanRow,
   computeSatellitePosition,
   computeSubsolarPoint,
   getGlobeAltitudeRatio,
+  getSatelliteColor,
 } from '../services/api';
 
 interface GlobeVisualizerProps {
@@ -15,11 +17,27 @@ interface GlobeVisualizerProps {
   satellites: SatelliteConfig[];
   selectedEvent: GeoEvent | null;
   selectedSatelliteId: string | null;
+  selectedAcquisition: AcquisitionPlanRow | null;
+  acquisitionFocusKey?: number;
   trackSelectedSatellite: boolean;
   onSelectEvent: (event: GeoEvent) => void;
   onSelectSatellite: (satellite: SatellitePosition) => void;
+  onFocusAcquisition?: () => void;
   getSimulatedTimeMs: () => number;
   autoRotate: boolean;
+}
+
+interface AcquisitionRenderObject {
+  isAcquisitionTarget: true;
+  id: string;
+  acquisition: AcquisitionPlanRow;
+  color: string;
+}
+
+type GlobeSceneObject = SatellitePosition | AcquisitionRenderObject;
+
+function isAcquisitionObject(obj: any): obj is AcquisitionRenderObject {
+  return Boolean(obj && obj.isAcquisitionTarget === true);
 }
 
 function getIntensityColor(intensity: number): string {
@@ -29,10 +47,22 @@ function getIntensityColor(intensity: number): string {
   return '#10b981'; // Emerald / Nominal
 }
 
+/**
+ * Returns the exact status badge color used in the Satellite Info Panel (.acq-status-badge)
+ */
+function getAcquisitionStatusColor(status: string): string {
+  const normalized = (status || '').toLowerCase();
+  if (normalized === 'completed') return '#34d399'; // Emerald green (.acq-status-badge.completed)
+  if (normalized === 'acquiring') return '#38bdf8'; // Sky cyan (.acq-status-badge.acquiring)
+  if (normalized === 'failed') return '#fb7185'; // Rose red (.acq-status-badge.failed)
+  return '#fbbf24'; // Amber gold (.acq-status-badge.pending)
+}
+
 const EARTH_RADIUS_KM = 6371;
 const GLOBE_RADIUS_UNITS = 100;
 const FOOTPRINT_SIZE_KM = 300;
 const FOOTPRINT_SIZE_UNITS = (FOOTPRINT_SIZE_KM / EARTH_RADIUS_KM) * GLOBE_RADIUS_UNITS;
+const MAX_ORBIT_TRACE_POINTS = 2400;
 
 // Shared geometries for satellites, footprints, and selection highlight halos
 const satBodyGeom = new THREE.OctahedronGeometry(1.15, 1);
@@ -167,6 +197,151 @@ function createSatelliteAndFootprintMesh(sat: SatellitePosition): THREE.Group {
   return group;
 }
 
+/**
+ * Builds the highlighted acquisition target rectangle on the globe surface at the exact
+ * physical scale (width_m along geographic parallels, height_m along meridians), plus
+ * a pulsing highlight frame so even small 5x5 km targets stand out clearly on the globe.
+ */
+function createAcquisitionTargetMesh(acq: AcquisitionPlanRow, colorHex: string): THREE.Group {
+  const group = new THREE.Group();
+  const baseColor = new THREE.Color(colorHex);
+
+  const widthKm = acq.width_m / 1000;
+  const heightKm = acq.height_m / 1000;
+  const widthUnits = Math.max(0.05, (widthKm / EARTH_RADIUS_KM) * GLOBE_RADIUS_UNITS);
+  const heightUnits = Math.max(0.05, (heightKm / EARTH_RADIUS_KM) * GLOBE_RADIUS_UNITS);
+
+  // 1. Exact physical width x height acquisition surface rectangle
+  const exactPlaneGeom = new THREE.PlaneGeometry(widthUnits, heightUnits);
+  const exactFillMat = new THREE.MeshBasicMaterial({
+    color: baseColor,
+    transparent: true,
+    opacity: 0.62,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const exactRectMesh = new THREE.Mesh(exactPlaneGeom, exactFillMat);
+  group.add(exactRectMesh);
+
+  // Crisp bright white border along the exact acquisition rectangle perimeter
+  const exactEdgesGeom = new THREE.EdgesGeometry(exactPlaneGeom);
+  const exactBorderMat = new THREE.LineBasicMaterial({
+    color: '#ffffff',
+    transparent: true,
+    opacity: 1.0,
+  });
+  const exactBorderLines = new THREE.LineSegments(exactEdgesGeom, exactBorderMat);
+  exactBorderLines.position.set(0, 0, 0.02);
+  group.add(exactBorderLines);
+
+  // 2. Pulsing highlight halo frame & locator ring colored to match the acquisition status text in the panel
+  const statusColor = new THREE.Color(getAcquisitionStatusColor(acq.status));
+  const highlightGroup = new THREE.Group();
+  const haloSpanW = widthUnits + 0.32;
+  const haloSpanH = heightUnits + 0.32;
+  const outerFrameGeom = new THREE.PlaneGeometry(haloSpanW, haloSpanH);
+  const outerFrameEdges = new THREE.EdgesGeometry(outerFrameGeom);
+  const outerFrameMat = new THREE.LineBasicMaterial({
+    color: statusColor,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const outerFrameLines = new THREE.LineSegments(outerFrameEdges, outerFrameMat);
+  outerFrameLines.position.set(0, 0, 0.03);
+  highlightGroup.add(outerFrameLines);
+
+  const ringRadius = Math.max(widthUnits, heightUnits) * 0.75 + 0.35;
+  const locatorRingGeom = new THREE.RingGeometry(ringRadius, ringRadius + 0.14, 36);
+  const locatorRingMat = new THREE.MeshBasicMaterial({
+    color: statusColor,
+    transparent: true,
+    opacity: 0.92,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const locatorRingMesh = new THREE.Mesh(locatorRingGeom, locatorRingMat);
+  locatorRingMesh.position.set(0, 0, 0.01);
+  highlightGroup.add(locatorRingMesh);
+
+  group.add(highlightGroup);
+  group.userData.acqHighlightGroup = highlightGroup;
+  group.userData.haloMaterials = [outerFrameMat, locatorRingMat];
+
+  return group;
+}
+
+interface OrbitTraceResources {
+  group: THREE.Group;
+  orbitLine: THREE.Line;
+  orbitPositions: Float32Array;
+  orbitColors: Float32Array;
+  nadirLine: THREE.Line;
+  nadirPositions: Float32Array;
+  futureSatMesh: THREE.Mesh;
+  futureSatMat: THREE.MeshBasicMaterial;
+}
+
+/**
+ * Creates a reusable Three.js group in the globe scene to render the selected satellite's
+ * future orbit trace from the current simulated time until the planned acquisition time,
+ * plus a nadir capture line connecting the satellite's position at acquisition time to the target area.
+ */
+function createOrbitTraceResources(): OrbitTraceResources {
+  const group = new THREE.Group();
+  group.name = 'selectedAcquisitionOrbitTrace';
+  group.visible = false;
+
+  const orbitPositions = new Float32Array(MAX_ORBIT_TRACE_POINTS * 3);
+  const orbitColors = new Float32Array(MAX_ORBIT_TRACE_POINTS * 3);
+  const orbitGeom = new THREE.BufferGeometry();
+  orbitGeom.setAttribute('position', new THREE.BufferAttribute(orbitPositions, 3));
+  orbitGeom.setAttribute('color', new THREE.BufferAttribute(orbitColors, 3));
+
+  const orbitMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const orbitLine = new THREE.Line(orbitGeom, orbitMat);
+  orbitLine.frustumCulled = false;
+  group.add(orbitLine);
+
+  // Nadir line connecting the satellite's orbital position at acquisition_timestamp down to the target center
+  const nadirPositions = new Float32Array(2 * 3);
+  const nadirGeom = new THREE.BufferGeometry();
+  nadirGeom.setAttribute('position', new THREE.BufferAttribute(nadirPositions, 3));
+  const nadirMat = new THREE.LineBasicMaterial({
+    color: '#ffffff',
+    transparent: true,
+    opacity: 0.95,
+  });
+  const nadirLine = new THREE.Line(nadirGeom, nadirMat);
+  nadirLine.frustumCulled = false;
+  group.add(nadirLine);
+
+  // Marker at the satellite's orbital position at acquisition_timestamp
+  const futureSatGeom = new THREE.SphereGeometry(0.95, 16, 16);
+  const futureSatMat = new THREE.MeshBasicMaterial({
+    color: '#ffffff',
+    transparent: true,
+    opacity: 0.95,
+  });
+  const futureSatMesh = new THREE.Mesh(futureSatGeom, futureSatMat);
+  futureSatMesh.frustumCulled = false;
+  group.add(futureSatMesh);
+
+  return {
+    group,
+    orbitLine,
+    orbitPositions,
+    orbitColors,
+    nadirLine,
+    nadirPositions,
+    futureSatMesh,
+    futureSatMat,
+  };
+}
+
 const CONTINENT_POLYGONS: Array<Array<[number, number]>> = [
   // North America
   [[-165, 68], [-130, 70], [-80, 62], [-60, 50], [-75, 35], [-82, 25], [-97, 18], [-105, 22], [-122, 37], [-135, 55]],
@@ -263,8 +438,6 @@ function createProceduralEarthCanvasTexture(mode: 'day' | 'night'): THREE.Canvas
 
 /**
  * Custom GLSL ShaderMaterial blending Blue Marble Day & Night textures across the realistic solar terminator.
- * Note: Raw ShaderMaterial in Three.js does not run the automatic linear-to-sRGB output pass unless included,
- * so we keep textures in default linear/raw space (no SRGBColorSpace decode) so full sRGB brightness is preserved!
  */
 function createDayNightEarthShaderMaterial(
   dayTexture: THREE.Texture,
@@ -333,9 +506,12 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   satellites,
   selectedEvent,
   selectedSatelliteId,
+  selectedAcquisition,
+  acquisitionFocusKey = 0,
   trackSelectedSatellite,
   onSelectEvent,
   onSelectSatellite,
+  onFocusAcquisition,
   getSimulatedTimeMs,
   autoRotate,
 }) => {
@@ -344,20 +520,26 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   const eventsRef = useRef<GeoEvent[]>(events);
   const satellitesRef = useRef<SatelliteConfig[]>(satellites);
   const selectedSatelliteIdRef = useRef<string | null>(selectedSatelliteId);
+  const selectedAcquisitionRef = useRef<AcquisitionPlanRow | null>(selectedAcquisition);
   const trackSelectedSatelliteRef = useRef<boolean>(trackSelectedSatellite);
   const onSelectEventRef = useRef(onSelectEvent);
   const onSelectSatelliteRef = useRef(onSelectSatellite);
+  const onFocusAcquisitionRef = useRef(onFocusAcquisition);
   const getSimulatedTimeMsRef = useRef(getSimulatedTimeMs);
   const meshCacheRef = useRef<Map<string, THREE.Group>>(new Map());
+  const acqMeshCacheRef = useRef<Map<string, THREE.Group>>(new Map());
+  const orbitTraceRef = useRef<OrbitTraceResources | null>(null);
   const positionObjectsRef = useRef<SatellitePosition[]>([]);
   const earthShaderMatRef = useRef<THREE.ShaderMaterial | null>(null);
 
   eventsRef.current = events;
   satellitesRef.current = satellites;
   selectedSatelliteIdRef.current = selectedSatelliteId;
+  selectedAcquisitionRef.current = selectedAcquisition;
   trackSelectedSatelliteRef.current = trackSelectedSatellite;
   onSelectEventRef.current = onSelectEvent;
   onSelectSatelliteRef.current = onSelectSatellite;
+  onFocusAcquisitionRef.current = onFocusAcquisition;
   getSimulatedTimeMsRef.current = getSimulatedTimeMs;
 
   const syncDataToGlobe = (globe: GlobeInstance, currentEvents: GeoEvent[]) => {
@@ -391,6 +573,23 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         }
       }
     });
+
+    const activeAcqStatus = selectedAcquisitionRef.current?.status || 'Pending';
+    const activeStatusColor = new THREE.Color(getAcquisitionStatusColor(activeAcqStatus));
+
+    acqMeshCacheRef.current.forEach((group) => {
+      const acqHighlightGroup = group.userData.acqHighlightGroup as THREE.Group | undefined;
+      if (acqHighlightGroup) {
+        const pulseScale = 1 + 0.16 * Math.sin(pulsePhase * 1.25);
+        acqHighlightGroup.scale.set(pulseScale, pulseScale, 1);
+      }
+      const haloMats = group.userData.haloMaterials as
+        | Array<THREE.LineBasicMaterial | THREE.MeshBasicMaterial>
+        | undefined;
+      if (haloMats) {
+        haloMats.forEach((mat) => mat.color.copy(activeStatusColor));
+      }
+    });
   };
 
   const updateSunPosition = (simMs: number) => {
@@ -398,6 +597,105 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     const subsolar = computeSubsolarPoint(simMs);
     const sunVec = latLngToUnitVector(subsolar.lat, subsolar.lng);
     earthShaderMatRef.current.uniforms.sunDirection.value.copy(sunVec);
+  };
+
+  /**
+   * Updates the 3D orbit trace of the selected satellite from the current simulated time
+   * until the planned acquisition timestamp.
+   */
+  const updateAcquisitionOrbitTrace = (
+    simMs: number,
+    fleet: SatelliteConfig[],
+    activeAcq: AcquisitionPlanRow | null,
+    activeSatId: string | null
+  ) => {
+    const traceRes = orbitTraceRef.current;
+    if (!traceRes) return;
+
+    if (!activeAcq || !activeSatId) {
+      traceRes.group.visible = false;
+      return;
+    }
+
+    const satCfg = fleet.find((s) => s.id === activeAcq.satellite_id);
+    if (!satCfg) {
+      traceRes.group.visible = false;
+      return;
+    }
+
+    const targetMs = new Date(activeAcq.acquisition_timestamp).getTime();
+    const remainingMs = targetMs - simMs;
+
+    if (remainingMs <= 0) {
+      // Acquisition time has already been reached or passed in simulated time
+      traceRes.group.visible = false;
+      return;
+    }
+
+    const satColorHex = getSatelliteColor(satCfg);
+    const baseColor = new THREE.Color(satColorHex);
+    const whiteColor = new THREE.Color('#ffffff');
+    const stepColor = new THREE.Color();
+
+    const altRatio = getGlobeAltitudeRatio(satCfg.orbit_altitude_km);
+    const orbitRadius = GLOBE_RADIUS_UNITS * (1 + altRatio);
+    const surfaceTargetRadius = GLOBE_RADIUS_UNITS * (1 + 0.0065);
+
+    // Sample at ~30s intervals (minimum 2 steps, capped at MAX_ORBIT_TRACE_POINTS - 1)
+    const numSteps = Math.max(
+      2,
+      Math.min(MAX_ORBIT_TRACE_POINTS - 1, Math.ceil(remainingMs / 30_000))
+    );
+    const totalPoints = numSteps + 1;
+
+    for (let i = 0; i <= numSteps; i++) {
+      const frac = i / numSteps;
+      const tMs = simMs + remainingMs * frac;
+      const pos = computeSatellitePosition(satCfg, tMs);
+      const unitVec = latLngToUnitVector(pos.currentLat, pos.currentLng);
+
+      const idx3 = i * 3;
+      traceRes.orbitPositions[idx3] = unitVec.x * orbitRadius;
+      traceRes.orbitPositions[idx3 + 1] = unitVec.y * orbitRadius;
+      traceRes.orbitPositions[idx3 + 2] = unitVec.z * orbitRadius;
+
+      // Gradient from satellite's vibrant color at current position toward bright white-tinted highlight at acquisition time
+      stepColor.copy(baseColor).lerp(whiteColor, frac * 0.42);
+      traceRes.orbitColors[idx3] = stepColor.r;
+      traceRes.orbitColors[idx3 + 1] = stepColor.g;
+      traceRes.orbitColors[idx3 + 2] = stepColor.b;
+    }
+
+    const geom = traceRes.orbitLine.geometry as THREE.BufferGeometry;
+    geom.setDrawRange(0, totalPoints);
+    (geom.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    (geom.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+
+    // Position the orbital waypoint marker at the final point (t = targetMs) and draw the nadir line to the acquisition center
+    const lastIdx3 = numSteps * 3;
+    const endOrbitX = traceRes.orbitPositions[lastIdx3];
+    const endOrbitY = traceRes.orbitPositions[lastIdx3 + 1];
+    const endOrbitZ = traceRes.orbitPositions[lastIdx3 + 2];
+
+    traceRes.futureSatMesh.position.set(endOrbitX, endOrbitY, endOrbitZ);
+    traceRes.futureSatMat.color.copy(baseColor);
+
+    const targetSurfaceVec = latLngToUnitVector(
+      activeAcq.center_latitude_deg,
+      activeAcq.center_longitude_deg
+    ).multiplyScalar(surfaceTargetRadius);
+
+    traceRes.nadirPositions[0] = endOrbitX;
+    traceRes.nadirPositions[1] = endOrbitY;
+    traceRes.nadirPositions[2] = endOrbitZ;
+    traceRes.nadirPositions[3] = targetSurfaceVec.x;
+    traceRes.nadirPositions[4] = targetSurfaceVec.y;
+    traceRes.nadirPositions[5] = targetSurfaceVec.z;
+
+    const nadirGeom = traceRes.nadirLine.geometry as THREE.BufferGeometry;
+    (nadirGeom.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+
+    traceRes.group.visible = true;
   };
 
   const syncSatellitesToGlobe = (globe: GlobeInstance, fleet: SatelliteConfig[]) => {
@@ -414,9 +712,26 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         Object.assign(positionObjectsRef.current[i], nextPos);
       }
     }
-    globe.objectsData(positionObjectsRef.current);
 
-    // Update highlight halo visibility and subtle pulse on the selected satellite
+    const combinedObjects: GlobeSceneObject[] = [...positionObjectsRef.current];
+    const activeAcq = selectedAcquisitionRef.current;
+    if (activeAcq && selectedSatelliteIdRef.current) {
+      const satCfg = fleet.find((s) => s.id === activeAcq.satellite_id);
+      const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
+      combinedObjects.push({
+        isAcquisitionTarget: true,
+        id: `acq-${activeAcq.id}`,
+        acquisition: activeAcq,
+        color: satColor,
+      });
+    }
+
+    globe.objectsData(combinedObjects);
+
+    // Update the 3D orbit trace from current simulated time until the planned acquisition time
+    updateAcquisitionOrbitTrace(simMs, fleet, activeAcq, selectedSatelliteIdRef.current);
+
+    // Update highlight halo visibility and subtle pulse on the selected satellite & acquisition target
     updateSelectionHalos(selectedSatelliteIdRef.current, performance.now() * 0.006);
 
     // If automatic satellite tracking is enabled, continuously keep the camera centered on the selected satellite
@@ -458,6 +773,11 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
 
     // Step 1: Instantiate Globe with waitForGlobeReady: false so scene.visible is true immediately
     const globe = new Globe(container, { waitForGlobeReady: false, animateIn: true });
+
+    // Attach 3D orbit trace group directly to the globe scene
+    const traceResources = createOrbitTraceResources();
+    orbitTraceRef.current = traceResources;
+    globe.scene().add(traceResources.group);
 
     // Step 2: Configure dimensions, custom Day/Night ShaderMaterial, atmosphere, points, rings, arcs, and 3D satellites
     globe
@@ -535,17 +855,46 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       .arcDashAnimateTime(2200)
       .arcStroke(0.65)
       .arcAltitudeAutoScale(0.38)
-      // Polar-orbiting Satellite Fleet + 300x300 km Capture Coverage Footprint + Selection Halo Layer
-      .objectLat((d: object) => (d as SatellitePosition).currentLat)
-      .objectLng((d: object) => (d as SatellitePosition).currentLng)
-      .objectAltitude((d: object) => getGlobeAltitudeRatio((d as SatellitePosition).orbit_altitude_km))
+      // Polar-orbiting Satellite Fleet + 300x300 km Capture Coverage Footprint + Highlighted Acquisition Area
+      .objectLat((d: object) =>
+        isAcquisitionObject(d)
+          ? d.acquisition.center_latitude_deg
+          : (d as SatellitePosition).currentLat
+      )
+      .objectLng((d: object) =>
+        isAcquisitionObject(d)
+          ? d.acquisition.center_longitude_deg
+          : (d as SatellitePosition).currentLng
+      )
+      .objectAltitude((d: object) =>
+        isAcquisitionObject(d)
+          ? 0.0065
+          : getGlobeAltitudeRatio((d as SatellitePosition).orbit_altitude_km)
+      )
       .objectFacesSurface(true)
       .objectRotation((d: object) => ({
         x: 0,
         y: 0,
-        z: (d as SatellitePosition).headingDeg,
+        z: isAcquisitionObject(d) ? 0 : (d as SatellitePosition).headingDeg,
       }))
       .objectThreeObject((d: object) => {
+        if (isAcquisitionObject(d)) {
+          const key = `${d.acquisition.id}:${d.color}`;
+          let acqMesh = acqMeshCacheRef.current.get(key);
+          if (!acqMesh) {
+            acqMesh = createAcquisitionTargetMesh(d.acquisition, d.color);
+            acqMeshCacheRef.current.set(key, acqMesh);
+          } else {
+            const nextStatusColor = new THREE.Color(getAcquisitionStatusColor(d.acquisition.status));
+            const haloMats = acqMesh.userData.haloMaterials as
+              | Array<THREE.LineBasicMaterial | THREE.MeshBasicMaterial>
+              | undefined;
+            if (haloMats) {
+              haloMats.forEach((mat) => mat.color.copy(nextStatusColor));
+            }
+          }
+          return acqMesh;
+        }
         const sat = d as SatellitePosition;
         let mesh = meshCacheRef.current.get(sat.id);
         if (!mesh) {
@@ -555,6 +904,32 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         return mesh;
       })
       .objectLabel((d: object) => {
+        if (isAcquisitionObject(d)) {
+          const acq = d.acquisition;
+          const wKm = (acq.width_m / 1000).toFixed(1);
+          const hKm = (acq.height_m / 1000).toFixed(1);
+          const utcStr = new Date(acq.acquisition_timestamp)
+            .toISOString()
+            .replace('T', ' ')
+            .slice(0, 19);
+          return `
+            <div style="
+              background: rgba(15, 23, 42, 0.94);
+              border: 1px solid ${d.color};
+              border-radius: 6px;
+              padding: 7px 11px;
+              color: #f8fafc;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 11px;
+            ">
+              <div style="color:${d.color};font-weight:700;margin-bottom:3px;">
+                ACQUISITION TARGET • ${wKm}×${hKm} km [${acq.status}]
+              </div>
+              <div>CENTER: ${acq.center_latitude_deg.toFixed(3)}°, ${acq.center_longitude_deg.toFixed(3)}°</div>
+              <div style="color:#94a3b8;font-size:10px;margin-top:2px;">TIME: ${utcStr} UTC</div>
+            </div>
+          `;
+        }
         const sat = d as SatellitePosition;
         const shortId = sat.id.slice(-4).toUpperCase();
         return `
@@ -573,6 +948,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         `;
       })
       .onObjectClick((obj: object) => {
+        if (isAcquisitionObject(obj)) return;
         const sat = obj as SatellitePosition;
         onSelectSatelliteRef.current(sat);
       });
@@ -600,7 +976,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       controls.dampingFactor = 0.07;
       controls.rotateSpeed = 0.75;
       controls.zoomSpeed = 0.9;
-      controls.minDistance = 140;
+      controls.minDistance = 108;
       controls.maxDistance = 650;
       controls.autoRotate = autoRotate;
       controls.autoRotateSpeed = 0.55;
@@ -636,7 +1012,9 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       window.removeEventListener('resize', handleResize);
       globeRef.current = null;
       earthShaderMatRef.current = null;
+      orbitTraceRef.current = null;
       meshCacheRef.current.clear();
+      acqMeshCacheRef.current.clear();
       if (container) {
         container.innerHTML = '';
       }
@@ -652,11 +1030,16 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     }
   }, [autoRotate, trackSelectedSatellite, selectedSatelliteId]);
 
-  // Immediately update the highlight halo and smoothly center the globe on the selected satellite
+  // Update highlight halo when selectedSatelliteId changes; only center on satellite if no acquisition is active or tracking is enabled
   useEffect(() => {
     updateSelectionHalos(selectedSatelliteId, performance.now() * 0.006);
 
     if (!globeRef.current || !selectedSatelliteId) return;
+    if (!trackSelectedSatelliteRef.current && selectedAcquisitionRef.current) {
+      // Camera move & zoom is handled by the selectedAcquisition effect below
+      return;
+    }
+
     const satCfg = satellitesRef.current.find((s) => s.id === selectedSatelliteId);
     if (!satCfg) return;
 
@@ -671,6 +1054,24 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       900
     );
   }, [selectedSatelliteId]);
+
+  // Sync acquisition target + orbit trace, and if satellite tracking is disabled, move camera and zoom over the acquisition area
+  useEffect(() => {
+    if (!globeRef.current) return;
+    syncSatellitesToGlobe(globeRef.current, satellitesRef.current);
+
+    if (selectedAcquisition && !trackSelectedSatelliteRef.current) {
+      onFocusAcquisitionRef.current?.();
+      globeRef.current.pointOfView(
+        {
+          lat: selectedAcquisition.center_latitude_deg,
+          lng: selectedAcquisition.center_longitude_deg,
+          altitude: 0.55,
+        },
+        1000
+      );
+    }
+  }, [selectedAcquisition, acquisitionFocusKey]);
 
   // Sync events, rings, and orbital relay arcs onto the 3D globe whenever events change
   useEffect(() => {

@@ -748,3 +748,257 @@ body,
   border-top: 1px solid rgba(148, 163, 184, 0.15);
   padding-top: 8px;
 }
+
+
+/* Satellite Acquisition Plan Section in Selected Satellite Info Popup */
+.acq-plan-section {
+  margin-top: 6px;
+  margin-bottom: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acq-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.acq-plan-header .label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.acq-plan-select {
+  width: 100%;
+  background: rgba(2, 6, 23, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #f8fafc;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+
+.acq-plan-select:hover,
+.acq-plan-select:focus {
+  border-color: var(--accent-cyan) !important;
+}
+
+.acq-plan-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  background: rgba(2, 6, 23, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.acq-plan-details .label {
+  display: block;
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.acq-plan-details .mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.acq-status-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.acq-status-badge.pending {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
+
+.acq-status-badge.completed {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.acq-status-badge.failed {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.4);
+}
+
+.acq-empty {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+
+.acq-status-badge.acquiring {
+  background: rgba(56, 189, 248, 0.22);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.5);
+}
+
+.acq-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.acq-action-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #f8fafc;
+}
+
+.acq-action-btn.refresh:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--accent-cyan);
+}
+
+.acq-action-btn.show-image.enabled {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: rgba(16, 185, 129, 0.55);
+  color: #ecfdf5;
+}
+
+.acq-action-btn.show-image.enabled:hover {
+  background: rgba(16, 185, 129, 0.35);
+  border-color: #34d399;
+}
+
+.acq-action-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* Acquired 256x256 Satellite Image Popup */
+.acquired-image-popup {
+  position: absolute;
+  width: 292px;
+  z-index: 22;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.acquired-image-frame {
+  width: 256px;
+  height: 256px;
+  margin: 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.acquired-image-view {
+  width: 256px;
+  height: 256px;
+  object-fit: cover;
+  display: block;
+}
+
+.acquired-image-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  background: rgba(2, 6, 23, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.acquired-image-meta .full-span {
+  grid-column: 1 / -1;
+}
+
+.acquired-image-meta .label {
+  display: block;
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.acquired-image-meta .mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+
+.hud-btn.next-acq-btn {
+  border-color: rgba(56, 189, 248, 0.48);
+  background: rgba(14, 116, 144, 0.28);
+  color: #e0f2fe;
+}
+
+.hud-btn.next-acq-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+}
+
+
+.acq-nav-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hud-btn.acq-step-btn {
+  padding: 6px 8px;
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(14, 116, 144, 0.22);
+  color: #e0f2fe;
+}
+
+.hud-btn.acq-step-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+}
+
+.hud-btn.acq-step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

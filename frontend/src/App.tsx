@@ -13,6 +13,10 @@ import {
   RotateCcw,
   Gauge,
   GripHorizontal,
+  Image as ImageIcon,
+  Crosshair,
+  ChevronLeft,
+  ChevronRight,
   X,
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
@@ -20,11 +24,15 @@ import {
   GeoEvent,
   SatelliteConfig,
   SatellitePosition,
+  AcquisitionPlanRow,
   HealthResponse,
   fetchGeoEvents,
   createGeoEvent,
   fetchHealth,
   fetchSatellites,
+  initializeAcquisitionPlan,
+  fetchAcquisitionPlan,
+  fetchAcquisitionById,
   computeSatellitePosition,
 } from './services/api';
 import './App.css';
@@ -110,6 +118,11 @@ const DraggablePanel: React.FC<DraggablePanelProps> = ({
 export function App() {
   const [events, setEvents] = useState<GeoEvent[]>([]);
   const [satellites, setSatellites] = useState<SatelliteConfig[]>([]);
+  const [acquisitionPlan, setAcquisitionPlan] = useState<AcquisitionPlanRow[]>([]);
+  const [selectedAcquisitionId, setSelectedAcquisitionId] = useState<string | null>(null);
+  const [acquisitionFocusKey, setAcquisitionFocusKey] = useState<number>(0);
+  const [refreshingAcquisition, setRefreshingAcquisition] = useState<boolean>(false);
+  const [showImagePopup, setShowImagePopup] = useState<boolean>(false);
   const [selectedEvent, setSelectedEvent] = useState<GeoEvent | null>(null);
   const [selectedSatelliteId, setSelectedSatelliteId] = useState<string | null>(null);
   const [trackSelectedSatellite, setTrackSelectedSatellite] = useState<boolean>(false);
@@ -197,11 +210,18 @@ export function App() {
     }
   }, []);
 
-  // Read satellite fleet configuration at startup
+  // Read satellite fleet configuration and initialize the 3-hour acquisition plan at startup
+  const startupInitRef = useRef<boolean>(false);
   useEffect(() => {
-    fetchSatellites()
-      .then((res) => setSatellites(res.data))
-      .catch((err) => console.error('Failed to load satellite fleet:', err));
+    if (startupInitRef.current) return;
+    startupInitRef.current = true;
+
+    Promise.all([fetchSatellites(), initializeAcquisitionPlan()])
+      .then(([satRes, planRes]) => {
+        setSatellites(satRes.data);
+        setAcquisitionPlan(planRes.data);
+      })
+      .catch((err) => console.error('Failed to load satellite fleet or acquisition plan:', err));
   }, []);
 
   useEffect(() => {
@@ -246,6 +266,156 @@ export function App() {
     return computeSatellitePosition(cfg, clockDisplay.simMs);
   }, [selectedSatelliteId, satellites, clockDisplay.simMs]);
 
+  // Filter acquisition plan rows belonging to the currently selected satellite
+  const selectedSatelliteAcquisitions = React.useMemo(() => {
+    if (!selectedSatelliteId) return [];
+    return acquisitionPlan.filter((row) => row.satellite_id === selectedSatelliteId);
+  }, [acquisitionPlan, selectedSatelliteId]);
+
+  // Keep selectedAcquisitionId synchronized with the active satellite's acquisition rows
+  useEffect(() => {
+    if (selectedSatelliteAcquisitions.length === 0) {
+      setSelectedAcquisitionId(null);
+      return;
+    }
+    const stillExists = selectedSatelliteAcquisitions.some((r) => r.id === selectedAcquisitionId);
+    if (!stillExists) {
+      setSelectedAcquisitionId(selectedSatelliteAcquisitions[0].id);
+    }
+  }, [selectedSatelliteAcquisitions, selectedAcquisitionId]);
+
+  const activeAcquisitionRow = React.useMemo(() => {
+    if (!selectedAcquisitionId) return selectedSatelliteAcquisitions[0] ?? null;
+    return (
+      selectedSatelliteAcquisitions.find((r) => r.id === selectedAcquisitionId) ??
+      selectedSatelliteAcquisitions[0] ??
+      null
+    );
+  }, [selectedSatelliteAcquisitions, selectedAcquisitionId]);
+
+  const activeAcquisitionId = activeAcquisitionRow?.id ?? null;
+
+  // Fetch the latest fields and status of a specific acquisition from the backend
+  const refreshAcquisitionRow = useCallback(async (acqId: string) => {
+    setRefreshingAcquisition(true);
+    try {
+      const res = await fetchAcquisitionById(acqId);
+      const updated = res.data;
+      setAcquisitionPlan((prev) =>
+        prev.map((row) => (row.id === updated.id ? updated : row))
+      );
+    } catch (err) {
+      console.error('Failed to refresh selected acquisition row:', err);
+    } finally {
+      setRefreshingAcquisition(false);
+    }
+  }, []);
+
+  // Automatically fetch current fields from the backend whenever a new acquisition is selected
+  useEffect(() => {
+    if (!activeAcquisitionId || !selectedSatelliteId) return;
+    void refreshAcquisitionRow(activeAcquisitionId);
+  }, [activeAcquisitionId, selectedSatelliteId, refreshAcquisitionRow]);
+
+  // Find the acquisition in the plan closest to current real time (UTC), open the satellite dialog, and select it
+  const handleSelectNextAcquisition = useCallback(async () => {
+    let currentPlan = acquisitionPlan;
+    try {
+      const latestPlanRes = await fetchAcquisitionPlan();
+      if (latestPlanRes.data.length > 0) {
+        currentPlan = latestPlanRes.data;
+        setAcquisitionPlan(currentPlan);
+      }
+    } catch {
+      // Fallback to in-memory acquisitionPlan if network request fails
+    }
+
+    if (currentPlan.length === 0) return;
+
+    const nowRealMs = Date.now();
+
+    // Prefer acquisitions whose window has not yet ended (upcoming or currently Acquiring),
+    // and pick the one closest to nowRealMs; fallback to closest across all rows if all have ended.
+    const upcomingOrActive = currentPlan.filter((row) => {
+      const acqMs = new Date(row.acquisition_timestamp).getTime();
+      const halfDurMs = ((row.duration_seconds || 60) * 1000) / 2;
+      return acqMs + halfDurMs >= nowRealMs && row.status.toLowerCase() !== 'completed';
+    });
+
+    const poolToSearch = upcomingOrActive.length > 0 ? upcomingOrActive : currentPlan;
+
+    let closestRow = poolToSearch[0];
+    let minDiff = Math.abs(new Date(closestRow.acquisition_timestamp).getTime() - nowRealMs);
+
+    for (let i = 1; i < poolToSearch.length; i++) {
+      const candidate = poolToSearch[i];
+      const diff = Math.abs(new Date(candidate.acquisition_timestamp).getTime() - nowRealMs);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestRow = candidate;
+      }
+    }
+
+    setSelectedSatelliteId(closestRow.satellite_id);
+    setSelectedAcquisitionId(closestRow.id);
+    setAcquisitionFocusKey((prev) => prev + 1);
+    void refreshAcquisitionRow(closestRow.id);
+  }, [acquisitionPlan, refreshAcquisitionRow]);
+
+  // All acquisition plan rows sorted chronologically by acquisition_timestamp
+  const sortedAcquisitionPlan = React.useMemo(() => {
+    return [...acquisitionPlan].sort((a, b) => {
+      const diff =
+        new Date(a.acquisition_timestamp).getTime() -
+        new Date(b.acquisition_timestamp).getTime();
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    });
+  }, [acquisitionPlan]);
+
+  const currentGlobalAcquisitionIndex = React.useMemo(() => {
+    if (!activeAcquisitionId || !selectedSatelliteId) return -1;
+    return sortedAcquisitionPlan.findIndex((row) => row.id === activeAcquisitionId);
+  }, [sortedAcquisitionPlan, activeAcquisitionId, selectedSatelliteId]);
+
+  const handleStepAcquisition = useCallback(
+    (direction: -1 | 1) => {
+      if (sortedAcquisitionPlan.length === 0) return;
+
+      if (currentGlobalAcquisitionIndex === -1) {
+        void handleSelectNextAcquisition();
+        return;
+      }
+
+      const targetIndex = currentGlobalAcquisitionIndex + direction;
+      if (targetIndex < 0 || targetIndex >= sortedAcquisitionPlan.length) {
+        return;
+      }
+
+      const targetRow = sortedAcquisitionPlan[targetIndex];
+      setSelectedSatelliteId(targetRow.satellite_id);
+      setSelectedAcquisitionId(targetRow.id);
+      setAcquisitionFocusKey((prev) => prev + 1);
+      void refreshAcquisitionRow(targetRow.id);
+    },
+    [sortedAcquisitionPlan, currentGlobalAcquisitionIndex, handleSelectNextAcquisition, refreshAcquisitionRow]
+  );
+
+  // Close the image popup if the selected acquisition changes to one that is not completed
+  useEffect(() => {
+    if (
+      !activeAcquisitionRow ||
+      activeAcquisitionRow.status.toLowerCase() !== 'completed' ||
+      !activeAcquisitionRow.acquired_image
+    ) {
+      setShowImagePopup(false);
+    }
+  }, [activeAcquisitionRow]);
+
+  const isAcquisitionCompleted =
+    Boolean(activeAcquisitionRow) &&
+    activeAcquisitionRow!.status.toLowerCase() === 'completed' &&
+    Boolean(activeAcquisitionRow!.acquired_image);
+
   return (
     <div className="app-shell">
       {/* 3D WebGL Globe Background */}
@@ -254,6 +424,8 @@ export function App() {
         satellites={satellites}
         selectedEvent={showGeoEvents ? selectedEvent : null}
         selectedSatelliteId={selectedSatelliteId}
+        selectedAcquisition={activeSatellite ? activeAcquisitionRow : null}
+        acquisitionFocusKey={acquisitionFocusKey}
         trackSelectedSatellite={trackSelectedSatellite}
         onSelectEvent={(ev) => {
           setSelectedEvent(ev);
@@ -261,6 +433,9 @@ export function App() {
         }}
         onSelectSatellite={(sat) => {
           setSelectedSatelliteId(sat.id);
+        }}
+        onFocusAcquisition={() => {
+          setAutoRotate(false);
         }}
         getSimulatedTimeMs={getSimulatedTimeMs}
         autoRotate={autoRotate}
@@ -313,23 +488,46 @@ export function App() {
             </span>
           </div>
 
-          <label className="hud-switch" title="Show or hide Geo-Events UI panels and 3D markers">
-            <input
-              type="checkbox"
-              checked={showGeoEvents}
-              onChange={(e) => {
-                const enabled = e.target.checked;
-                setShowGeoEvents(enabled);
-                if (!enabled) {
-                  setSelectedEvent(null);
-                }
-              }}
-            />
-            <span className="switch-track">
-              <span className="switch-thumb" />
-            </span>
-            <span className="switch-label">Geo-Events</span>
-          </label>
+          <div className="acq-nav-group">
+            <button
+              type="button"
+              className="hud-btn acq-step-btn"
+              onClick={() => handleStepAcquisition(-1)}
+              disabled={
+                sortedAcquisitionPlan.length === 0 ||
+                (currentGlobalAcquisitionIndex !== -1 && currentGlobalAcquisitionIndex <= 0)
+              }
+              title="Jump to previous acquisition in chronological order"
+              aria-label="Previous acquisition in time"
+            >
+              <ChevronLeft size={15} />
+            </button>
+
+            <button
+              type="button"
+              className="hud-btn next-acq-btn"
+              onClick={handleSelectNextAcquisition}
+              title="Find the acquisition closest to current real time (UTC) and open it in the Satellite Info Panel"
+            >
+              <Crosshair size={15} />
+              <span>Next Acquisition</span>
+            </button>
+
+            <button
+              type="button"
+              className="hud-btn acq-step-btn"
+              onClick={() => handleStepAcquisition(1)}
+              disabled={
+                sortedAcquisitionPlan.length === 0 ||
+                (currentGlobalAcquisitionIndex !== -1 &&
+                  currentGlobalAcquisitionIndex >= sortedAcquisitionPlan.length - 1)
+              }
+              title="Jump to next acquisition in chronological order"
+              aria-label="Next acquisition in time"
+            >
+              <ChevronRight size={15} />
+            </button>
+          </div>
 
           <button
             type="button"
@@ -552,7 +750,10 @@ export function App() {
               <button
                 type="button"
                 className="close-btn"
-                onClick={() => setSelectedSatelliteId(null)}
+                onClick={() => {
+                  setSelectedSatelliteId(null);
+                  setShowImagePopup(false);
+                }}
                 aria-label="Close satellite info"
               >
                 <X size={16} />
@@ -616,6 +817,124 @@ export function App() {
               <span className="mono">{activeSatellite.orbit_orientation_deg.toFixed(1)}° EQ</span>
             </div>
           </div>
+
+          {/* Satellite Image Acquisition Plan Dropdown, Details & Action Buttons */}
+          <div className="acq-plan-section">
+            <div className="acq-plan-header">
+              <span className="label">
+                ACQUISITION PLAN ({selectedSatelliteAcquisitions.length} SCHEDULED)
+              </span>
+            </div>
+            {selectedSatelliteAcquisitions.length > 0 ? (
+              <>
+                <select
+                  aria-label="Select Acquisition Plan Row"
+                  className="acq-plan-select"
+                  value={activeAcquisitionRow?.id || ''}
+                  onChange={(e) => {
+                    setSelectedAcquisitionId(e.target.value);
+                    setAcquisitionFocusKey((prev) => prev + 1);
+                  }}
+                  style={{ borderColor: `${activeSatellite.color}55` }}
+                >
+                  {selectedSatelliteAcquisitions.map((acq, idx) => {
+                    const utcShort = formatUtcTimestamp(new Date(acq.acquisition_timestamp).getTime());
+                    const sizeKm = (acq.width_m / 1000).toFixed(1);
+                    return (
+                      <option key={acq.id} value={acq.id}>
+                        #{idx + 1} • {utcShort} • {sizeKm}×{sizeKm} km [{acq.status}]
+                      </option>
+                    );
+                  })}
+                </select>
+                {activeAcquisitionRow && (
+                  <>
+                    <div
+                      className="acq-plan-details"
+                      role="button"
+                      tabIndex={0}
+                      title="Click to center and zoom over this acquisition area"
+                      onClick={() => setAcquisitionFocusKey((prev) => prev + 1)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          setAcquisitionFocusKey((prev) => prev + 1);
+                        }
+                      }}
+                    >
+                      <div>
+                        <span className="label">PLANNED TIME</span>
+                        <span className="mono">
+                          {formatUtcTimestamp(new Date(activeAcquisitionRow.acquisition_timestamp).getTime())}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="label">STATUS / DURATION</span>
+                        <span className="mono">
+                          <span className={`acq-status-badge ${activeAcquisitionRow.status.toLowerCase()}`}>
+                            {activeAcquisitionRow.status}
+                          </span>{' '}
+                          • {activeAcquisitionRow.duration_seconds}s
+                        </span>
+                      </div>
+                      <div>
+                        <span className="label">TARGET CENTER (LAT, LNG)</span>
+                        <span className="mono">
+                          {activeAcquisitionRow.center_latitude_deg.toFixed(3)}°,{' '}
+                          {activeAcquisitionRow.center_longitude_deg.toFixed(3)}°
+                        </span>
+                      </div>
+                      <div>
+                        <span className="label">CAPTURE AREA (W × H)</span>
+                        <span className="mono">
+                          {(activeAcquisitionRow.width_m / 1000).toFixed(1)} ×{' '}
+                          {(activeAcquisitionRow.height_m / 1000).toFixed(1)} km
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="acq-actions-row">
+                      <button
+                        type="button"
+                        className="acq-action-btn refresh"
+                        onClick={() => {
+                          if (activeAcquisitionRow) {
+                            void refreshAcquisitionRow(activeAcquisitionRow.id);
+                          }
+                        }}
+                        disabled={refreshingAcquisition}
+                        title="Fetch current status and fields for this acquisition from the backend"
+                      >
+                        <RefreshCw size={13} className={refreshingAcquisition ? 'spin' : ''} />
+                        <span>Refresh</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`acq-action-btn show-image ${isAcquisitionCompleted ? 'enabled' : ''}`}
+                        onClick={() => {
+                          if (isAcquisitionCompleted) {
+                            setShowImagePopup(true);
+                          }
+                        }}
+                        disabled={!isAcquisitionCompleted}
+                        title={
+                          isAcquisitionCompleted
+                            ? 'Display acquired 256×256 satellite image popup'
+                            : 'Image available once acquisition status is Completed'
+                        }
+                      >
+                        <ImageIcon size={13} />
+                        <span>Show Image</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <div className="acq-empty">No acquisitions scheduled for this satellite.</div>
+            )}
+          </div>
+
           <div className="sat-track-toggle-row">
             <label
               className="hud-switch sat-track-switch"
@@ -633,6 +952,66 @@ export function App() {
             </label>
           </div>
           <div className="tooltip-id">UUID: {activeSatellite.id}</div>
+        </DraggablePanel>
+      )}
+
+      {/* Draggable Acquired 256x256 Satellite Image Popup */}
+      {showImagePopup && activeSatellite && activeAcquisitionRow && activeAcquisitionRow.acquired_image && (
+        <DraggablePanel
+          className="acquired-image-popup"
+          initialPosition={{ x: Math.max(20, window.innerWidth - 680), y: 315 }}
+          style={{ borderColor: activeSatellite.color }}
+          ariaLabel="Acquired Satellite Image Popup"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <span className="tooltip-tag" style={{ color: activeSatellite.color }}>
+              ACQUIRED SATELLITE IMAGERY (256×256)
+            </span>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setShowImagePopup(false)}
+                aria-label="Close acquired image popup"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div className="acquired-image-frame">
+            <img
+              src={activeAcquisitionRow.acquired_image}
+              alt={`Acquired satellite capture at ${activeAcquisitionRow.center_latitude_deg.toFixed(3)}, ${activeAcquisitionRow.center_longitude_deg.toFixed(3)}`}
+              width={256}
+              height={256}
+              className="acquired-image-view"
+            />
+          </div>
+
+          <div className="acquired-image-meta">
+            <div>
+              <span className="label">CENTER (LAT, LNG)</span>
+              <span className="mono">
+                {activeAcquisitionRow.center_latitude_deg.toFixed(4)}°,{' '}
+                {activeAcquisitionRow.center_longitude_deg.toFixed(4)}°
+              </span>
+            </div>
+            <div>
+              <span className="label">SWATH AREA</span>
+              <span className="mono">
+                {(activeAcquisitionRow.width_m / 1000).toFixed(1)} ×{' '}
+                {(activeAcquisitionRow.height_m / 1000).toFixed(1)} km
+              </span>
+            </div>
+            <div className="full-span">
+              <span className="label">ACQUISITION TIMESTAMP</span>
+              <span className="mono">
+                {formatUtcTimestamp(new Date(activeAcquisitionRow.acquisition_timestamp).getTime())}
+              </span>
+            </div>
+          </div>
         </DraggablePanel>
       )}
 

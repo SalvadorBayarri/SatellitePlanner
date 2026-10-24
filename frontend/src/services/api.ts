@@ -58,6 +58,25 @@ export interface SatelliteFleetResponse {
   total: number;
 }
 
+export interface AcquisitionPlanRow {
+  id: string;
+  satellite_id: string;
+  acquisition_timestamp: string;
+  duration_seconds: number;
+  center_longitude_deg: number;
+  center_latitude_deg: number;
+  width_m: number;
+  height_m: number;
+  status: 'Pending' | 'Acquiring' | 'Completed' | 'Failed' | string;
+  acquired_image: string | null;
+}
+
+export interface AcquisitionPlanResponse {
+  data: AcquisitionPlanRow[];
+  added?: number;
+  total: number;
+}
+
 export interface SatellitePosition extends SatelliteConfig {
   currentLat: number;
   currentLng: number;
@@ -71,12 +90,12 @@ const EARTH_RADIUS_KM = 6371;
 const ORBIT_PERIOD_MINUTES = 97;
 
 export const SATELLITE_PALETTE: string[] = [
-  '#f43f5e', '#fb7185', '#e879f9', '#c084fc', '#a78bfa',
-  '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee', '#2dd4bf',
-  '#34d399', '#4ade80', '#a3e635', '#facc15', '#fbbf24',
-  '#fb923c', '#f87171', '#f472b6', '#d946ef', '#a855f7',
-  '#6366f1', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6',
-  '#10b981', '#22c55e', '#84cc16', '#eab308', '#f97316',
+  '#f43f5e', '#fb7185', '#f472b6', '#e879f9', '#d946ef',
+  '#c084fc', '#a855f7', '#a78bfa', '#818cf8', '#6366f1',
+  '#60a5fa', '#3b82f6', '#38bdf8', '#0ea5e9', '#22d3ee',
+  '#06b6d4', '#2dd4bf', '#14b8a6', '#34d399', '#10b981',
+  '#4ade80', '#22c55e', '#a3e635', '#84cc16', '#facc15',
+  '#eab308', '#fbbf24', '#f59e0b', '#fb923c', '#f97316',
 ];
 
 export function getSatelliteColor(sat: SatelliteConfig, indexHint?: number): string {
@@ -87,7 +106,7 @@ export function getSatelliteColor(sat: SatelliteConfig, indexHint?: number): str
   if (!Number.isNaN(suffix) && suffix >= 1) {
     return SATELLITE_PALETTE[(suffix - 1) % SATELLITE_PALETTE.length];
   }
-  const planeIdx = Math.round((sat.orbit_orientation_deg + 180) / 12);
+  const planeIdx = Math.round((sat.orbit_orientation_deg + 90) / 6);
   return SATELLITE_PALETTE[Math.abs(planeIdx) % SATELLITE_PALETTE.length];
 }
 
@@ -251,6 +270,34 @@ export async function fetchSatellites(): Promise<SatelliteFleetResponse> {
   const response = await fetch(`${API_BASE_URL}/satellites`);
   if (!response.ok) {
     throw new Error(`Failed to fetch satellite fleet: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function initializeAcquisitionPlan(): Promise<AcquisitionPlanResponse> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to initialize acquisition plan: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchAcquisitionPlan(satelliteId?: string): Promise<AcquisitionPlanResponse> {
+  const query = satelliteId ? `?satellite_id=${encodeURIComponent(satelliteId)}` : '';
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan${query}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch acquisition plan: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchAcquisitionById(id: string): Promise<{ data: AcquisitionPlanRow }> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/${encodeURIComponent(id)}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch acquisition item: ${response.statusText}`);
   }
   return response.json();
 }
