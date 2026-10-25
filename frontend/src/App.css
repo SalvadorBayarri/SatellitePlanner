@@ -115,6 +115,14 @@ body,
   border: 1px solid rgba(148, 163, 184, 0.25);
 }
 
+.status-pill.icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 8px;
+}
+
 .status-pill.online {
   color: var(--accent-emerald);
   border-color: rgba(16, 185, 129, 0.35);
@@ -1631,4 +1639,197 @@ body,
 .cancel-dismiss-btn:hover {
   background: rgba(56, 189, 248, 0.2);
   border-color: var(--accent-cyan);
+}
+
+/* Acquisition Requests Queue Top-Bar Button & Floating Window */
+.hud-btn.see-queue-btn {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(120, 53, 15, 0.26);
+  color: #fef3c7;
+}
+
+.hud-btn.see-queue-btn:hover,
+.hud-btn.see-queue-btn.active {
+  background: rgba(245, 158, 11, 0.3);
+  border-color: #fbbf24;
+  color: #ffffff;
+}
+
+.queue-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.35);
+  border: 1px solid rgba(251, 191, 36, 0.65);
+  color: #fef3c7;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.requests-queue-window {
+  position: absolute;
+  width: 400px;
+  max-height: calc(100vh - 125px);
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(251, 191, 36, 0.48);
+}
+
+.queue-list-item {
+  cursor: default;
+}
+
+.queue-item-coords-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.req-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.req-status-badge.queued {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+}
+
+.req-status-badge.evaluating {
+  background: rgba(56, 189, 248, 0.22);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+}
+
+/* Batch Requests Top-Bar Button & Floating Dialog */
+.hud-btn.batch-requests-btn {
+  border-color: rgba(14, 165, 233, 0.48);
+  background: rgba(12, 74, 110, 0.32);
+  color: #e0f2fe;
+}
+
+.hud-btn.batch-requests-btn:hover,
+.hud-btn.batch-requests-btn.active {
+  background: rgba(14, 165, 233, 0.32);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+}
+
+.batch-requests-dialog {
+  position: absolute;
+  width: 350px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+}
+
+.batch-count-input {
+  width: 100%;
+  background: rgba(2, 6, 23, 0.82);
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #ffffff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.batch-count-input:focus {
+  border-color: var(--accent-cyan);
+}
+
+.batch-mode-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.batch-mode-hint strong {
+  color: #e2e8f0;
+}
+
+/* Reprogram Failed Acquisition & Mark as Failed Styles */
+.acq-status-badge.reprogrammed {
+  background: rgba(99, 102, 241, 0.22);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.5);
+}
+
+.acq-action-btn.reprogram-acq {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(251, 191, 36, 0.55);
+  color: #fef3c7;
+}
+
+.acq-action-btn.reprogram-acq:hover {
+  background: rgba(245, 158, 11, 0.35);
+  border-color: #fbbf24;
+  color: #ffffff;
+}
+
+.acq-action-btn.mark-failed-btn {
+  width: 100%;
+  background: rgba(244, 63, 94, 0.18);
+  border-color: rgba(244, 63, 94, 0.5);
+  color: #fecdd3;
+}
+
+.acq-action-btn.mark-failed-btn:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.32);
+  border-color: #fb7185;
+  color: #ffffff;
+}
+
+.reprogram-source-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fde68a;
+}
+
+.reprogram-source-banner > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.reprogram-source-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fbbf24;
+}
+
+.reprogram-source-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fef3c7;
+  word-break: break-all;
 }

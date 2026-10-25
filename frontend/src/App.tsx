@@ -17,6 +17,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  ListOrdered,
+  Layers,
   User as UserIcon,
   CheckCircle2,
   AlertCircle,
@@ -30,6 +32,7 @@ import {
   SatellitePosition,
   UserRow,
   AcquisitionPlanRow,
+  AcquisitionRequestQueueItem,
   AcquisitionRequestEvaluationResult,
   AcquisitionCancelEventPayload,
   HealthResponse,
@@ -41,9 +44,11 @@ import {
   initializeAcquisitionPlan,
   fetchAcquisitionPlan,
   fetchAcquisitionById,
+  fetchAcquisitionRequestsQueue,
   submitAcquisitionRequest,
   confirmReservedAcquisition,
   cancelReservedAcquisition,
+  markAcquisitionFailed,
   subscribeToAcquisitionUpdates,
   computeSatellitePosition,
   getSatelliteColor,
@@ -146,8 +151,23 @@ export function App() {
   const [showAcquisitionPlanWindow, setShowAcquisitionPlanWindow] = useState<boolean>(false);
   const [planUserFilter, setPlanUserFilter] = useState<string>('ALL');
 
+  // Acquisition Requests Queue Window state
+  const [requestsQueue, setRequestsQueue] = useState<AcquisitionRequestQueueItem[]>([]);
+  const [showRequestsQueueWindow, setShowRequestsQueueWindow] = useState<boolean>(false);
+  const [queueOwnerFilter, setQueueOwnerFilter] = useState<string>('ALL');
+
+  // Batch Requests Dialog state
+  const [showBatchRequestsDialog, setShowBatchRequestsDialog] = useState<boolean>(false);
+  const [batchRequestCount, setBatchRequestCount] = useState<string>('5');
+  const [submittingBatchRequests, setSubmittingBatchRequests] = useState<boolean>(false);
+  const [batchSubmitError, setBatchSubmitError] = useState<string | null>(null);
+
   // Request Image Dialog state
   const [showRequestImageDialog, setShowRequestImageDialog] = useState<boolean>(false);
+  const [reprogramSourceAcquisitionId, setReprogramSourceAcquisitionId] = useState<string | null>(
+    null
+  );
+  const [markingFailed, setMarkingFailed] = useState<boolean>(false);
   const [isPickingGlobeLocation, setIsPickingGlobeLocation] = useState<boolean>(false);
   const [requestLongitude, setRequestLongitude] = useState<string>('-3.7038');
   const [requestLatitude, setRequestLatitude] = useState<string>('40.4168');
@@ -261,18 +281,22 @@ export function App() {
       fetchSatellites(),
       initializeAcquisitionPlan(),
       fetchUsers().catch(() => null),
+      fetchAcquisitionRequestsQueue().catch(() => null),
     ])
-      .then(([satRes, planRes, usersRes]) => {
+      .then(([satRes, planRes, usersRes, queueRes]) => {
         setSatellites(satRes.data);
         setAcquisitionPlan(planRes.data);
         if (usersRes && usersRes.data.length > 0) {
           setUsers(usersRes.data);
         }
+        if (queueRes) {
+          setRequestsQueue(queueRes.data);
+        }
       })
       .catch((err) => console.error('Failed to load satellite fleet or acquisition plan:', err));
   }, []);
 
-  // Subscribe to real-time acquisition status updates, request evaluations, and cancellations via Server-Sent Events (NATS JetStream push)
+  // Subscribe to real-time acquisition status updates, request evaluations, cancellations, and queue changes via Server-Sent Events (NATS JetStream push)
   useEffect(() => {
     const unsubscribe = subscribeToAcquisitionUpdates(
       (updatedRow) => {
@@ -304,6 +328,9 @@ export function App() {
         if (cancelEvent.reason !== 'user_canceled') {
           setCancelNotification(cancelEvent);
         }
+      },
+      (updatedQueue) => {
+        setRequestsQueue(updatedQueue);
       }
     );
     return () => {
@@ -335,6 +362,15 @@ export function App() {
     }
   }, []);
 
+  const handleRefreshRequestsQueue = useCallback(async () => {
+    try {
+      const latestQueueRes = await fetchAcquisitionRequestsQueue();
+      setRequestsQueue(latestQueueRes.data);
+    } catch (err) {
+      console.error('Failed to refresh acquisition requests queue:', err);
+    }
+  }, []);
+
   const handleSubmitImageRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingImageRequest(true);
@@ -362,15 +398,53 @@ export function App() {
         height_m: sizeMeters,
         time_mode: requestTimeMode,
         requested_timestamp: requestedTimestampIso,
+        confirmation_mode: 'manual',
+        reprogrammed_from_id: reprogramSourceAcquisitionId,
       });
 
       setPendingEvaluationsCount((c) => c + 1);
+      setReprogramSourceAcquisitionId(null);
       setShowRequestImageDialog(false);
       setIsPickingGlobeLocation(false);
     } catch (err: any) {
       setRequestSubmitError(err.message || 'Failed to submit acquisition request');
     } finally {
       setSubmittingImageRequest(false);
+    }
+  };
+
+  const handleSubmitBatchRequests = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const count = Math.max(1, Math.min(50, parseInt(batchRequestCount, 10) || 1));
+    setSubmittingBatchRequests(true);
+    setBatchSubmitError(null);
+
+    const predefinedSizesKm = [5, 10, 15, 25, 35, 50];
+
+    try {
+      for (let i = 0; i < count; i++) {
+        const randomLng = Number((Math.random() * 360 - 180).toFixed(4));
+        const randomLat = Number((Math.random() * 150 - 75).toFixed(4));
+        const sizeKm =
+          predefinedSizesKm[Math.floor(Math.random() * predefinedSizesKm.length)];
+        const sizeMeters = sizeKm * 1000;
+
+        await submitAcquisitionRequest({
+          longitude: randomLng,
+          latitude: randomLat,
+          width_m: sizeMeters,
+          height_m: sizeMeters,
+          time_mode: 'ASAP',
+          requested_timestamp: null,
+          confirmation_mode: 'auto',
+        });
+      }
+
+      setShowBatchRequestsDialog(false);
+    } catch (err: any) {
+      setBatchSubmitError(err.message || 'Failed to submit batch acquisition requests');
+    } finally {
+      setSubmittingBatchRequests(false);
     }
   };
 
@@ -405,6 +479,35 @@ export function App() {
       setProcessingEvaluationAction(false);
     }
   };
+
+  const handleMarkAcquisitionFailed = async () => {
+    if (!activeAcquisitionRow || markingFailed) return;
+    const acqId = activeAcquisitionRow.id;
+    setMarkingFailed(true);
+    try {
+      const res = await markAcquisitionFailed(acqId);
+      setAcquisitionPlan((prev) =>
+        prev.map((row) => (row.id === acqId ? res.data : row))
+      );
+      setShowImagePopup(false);
+    } catch (err) {
+      console.error('Failed to mark acquisition as failed:', err);
+    } finally {
+      setMarkingFailed(false);
+    }
+  };
+
+  const handleOpenReprogramDialog = useCallback((row: AcquisitionPlanRow) => {
+    setReprogramSourceAcquisitionId(row.id);
+    setRequestLongitude(row.center_longitude_deg.toFixed(4));
+    setRequestLatitude(row.center_latitude_deg.toFixed(4));
+    const sizeKm = Math.max(5, Math.round(row.width_m / 1000));
+    setRequestAreaSizeKm(sizeKm);
+    setRequestTimeMode('ASAP');
+    setRequestSubmitError(null);
+    setIsPickingGlobeLocation(false);
+    setShowRequestImageDialog(true);
+  }, []);
 
   const handlePublishEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -523,7 +626,13 @@ export function App() {
     const upcomingOrActive = currentPlan.filter((row) => {
       const acqMs = new Date(row.acquisition_timestamp).getTime();
       const halfDurMs = ((row.duration_seconds || 60) * 1000) / 2;
-      return acqMs + halfDurMs >= nowRealMs && row.status.toLowerCase() !== 'completed';
+      const st = row.status.toLowerCase();
+      return (
+        acqMs + halfDurMs >= nowRealMs &&
+        st !== 'completed' &&
+        st !== 'failed' &&
+        st !== 'reprogrammed'
+      );
     });
 
     const poolToSearch = upcomingOrActive.length > 0 ? upcomingOrActive : currentPlan;
@@ -563,6 +672,25 @@ export function App() {
       return false;
     });
   }, [sortedAcquisitionPlan, planUserFilter, users, getUserName]);
+
+  // Pending acquisition requests sorted chronologically by submission time (created_at)
+  const sortedRequestsQueue = React.useMemo(() => {
+    return [...requestsQueue].sort((a, b) => {
+      const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    });
+  }, [requestsQueue]);
+
+  // Filtered pending acquisition requests by owner for the "Requests Queue" floating window
+  const filteredRequestsQueue = React.useMemo(() => {
+    if (queueOwnerFilter === 'ALL') return sortedRequestsQueue;
+    const selectedUser = users.find((u) => u.id === queueOwnerFilter || u.name === queueOwnerFilter);
+    return sortedRequestsQueue.filter((row) => {
+      if (row.user_id && row.user_id === queueOwnerFilter) return true;
+      if (selectedUser && getUserName(row.user_id) === selectedUser.name) return true;
+      return false;
+    });
+  }, [sortedRequestsQueue, queueOwnerFilter, users, getUserName]);
 
   const currentGlobalAcquisitionIndex = React.useMemo(() => {
     if (!activeAcquisitionId || !selectedSatelliteId) return -1;
@@ -604,6 +732,10 @@ export function App() {
     Boolean(activeAcquisitionRow) &&
     activeAcquisitionRow!.status.toLowerCase() === 'completed' &&
     Boolean(activeAcquisitionRow!.acquired_image);
+
+  const isAcquisitionFailed =
+    Boolean(activeAcquisitionRow) &&
+    activeAcquisitionRow!.status.toLowerCase() === 'failed';
 
   return (
     <div className="app-shell">
@@ -650,10 +782,11 @@ export function App() {
 
         <div className="status-pills">
           <div
-            className="status-pill online clickable-pill"
+            className="status-pill icon-only online clickable-pill"
             role="button"
             tabIndex={0}
-            title="Click to open Satellite Information Panel"
+            title={`Fleet: ${satellites.length} Satellites — Click to open Satellite Information Panel`}
+            aria-label={`Fleet: ${satellites.length} Satellites`}
             onClick={() => {
               if (!selectedSatelliteId && satellites.length > 0) {
                 setSelectedSatelliteId(satellites[0].id);
@@ -665,20 +798,19 @@ export function App() {
               }
             }}
           >
-            <Satellite size={14} />
-            <span>FLEET: {satellites.length} SATS</span>
+            <Satellite size={15} />
           </div>
 
           <div
-            className={`status-pill ${health?.status === 'ok' ? 'online' : 'offline'}`}
+            className={`status-pill icon-only ${health?.status === 'ok' ? 'online' : 'offline'}`}
             title={
               health?.status === 'ok'
-                ? 'Backend API, PostgreSQL, and NATS JetStream are online'
-                : 'Connecting to backend services...'
+                ? 'Status: ONLINE — Backend API, PostgreSQL, and NATS JetStream are online'
+                : 'Status: DEGRADED — Connecting to backend services...'
             }
+            aria-label={health?.status === 'ok' ? 'Status Online' : 'Status Degraded'}
           >
-            <Activity size={14} />
-            <span>STATUS: {health?.status === 'ok' ? 'ONLINE' : 'DEGRADED'}</span>
+            <Activity size={15} />
           </div>
 
           <button
@@ -687,6 +819,7 @@ export function App() {
             onClick={() => {
               const nextOpen = !showRequestImageDialog;
               setShowRequestImageDialog(nextOpen);
+              setReprogramSourceAcquisitionId(null);
               if (!nextOpen) {
                 setIsPickingGlobeLocation(false);
               }
@@ -695,6 +828,38 @@ export function App() {
           >
             <Camera size={15} />
             <span>Request Image</span>
+          </button>
+
+          <button
+            type="button"
+            className={`hud-btn batch-requests-btn ${showBatchRequestsDialog ? 'active' : ''}`}
+            onClick={() => {
+              setShowBatchRequestsDialog((prev) => !prev);
+              setBatchSubmitError(null);
+            }}
+            title="Open dialog to send a batch of random auto-confirmed ASAP acquisition requests"
+          >
+            <Layers size={15} />
+            <span>Batch Requests</span>
+          </button>
+
+          <button
+            type="button"
+            className={`hud-btn see-queue-btn ${showRequestsQueueWindow ? 'active' : ''}`}
+            onClick={() => {
+              const nextOpen = !showRequestsQueueWindow;
+              setShowRequestsQueueWindow(nextOpen);
+              if (nextOpen) {
+                void handleRefreshRequestsQueue();
+              }
+            }}
+            title="Open floating Acquisition Requests Queue panel filterable by owner"
+          >
+            <ListOrdered size={15} />
+            <span>Requests Queue</span>
+            {requestsQueue.length > 0 && (
+              <span className="queue-count-badge">{requestsQueue.length}</span>
+            )}
           </button>
 
           <button
@@ -778,6 +943,72 @@ export function App() {
         </div>
       </header>
 
+      {/* Draggable Floating Batch Requests Dialog */}
+      {showBatchRequestsDialog && (
+        <DraggablePanel
+          className="batch-requests-dialog glass-card"
+          initialPosition={{ x: 460, y: 96 }}
+          ariaLabel="Batch Acquisition Requests Dialog"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              <Layers size={16} className="accent-cyan" />
+              <span className="tooltip-tag">BATCH ACQUISITION REQUESTS</span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setShowBatchRequestsDialog(false)}
+                aria-label="Close batch requests dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <form className="request-image-form" onSubmit={handleSubmitBatchRequests}>
+            <div className="req-section">
+              <label htmlFor="batch-req-count-input" className="req-section-label">
+                NUMBER OF REQUESTS TO ENQUEUE
+              </label>
+              <input
+                id="batch-req-count-input"
+                className="batch-count-input"
+                type="number"
+                min="1"
+                max="50"
+                step="1"
+                value={batchRequestCount}
+                onChange={(e) => setBatchRequestCount(e.target.value)}
+                required
+              />
+              <span className="batch-mode-hint">
+                Each request is sent with <strong>auto</strong> confirmation,{' '}
+                <strong>as soon as possible</strong> capture time, and a random location on the
+                globe.
+              </span>
+            </div>
+
+            {batchSubmitError && <div className="error-banner">{batchSubmitError}</div>}
+
+            <button
+              type="submit"
+              className="submit-btn req-submit-btn"
+              disabled={submittingBatchRequests}
+            >
+              <Layers size={15} />
+              <span>
+                {submittingBatchRequests
+                  ? 'Sending Batch Requests...'
+                  : `Send ${Math.max(1, Math.min(50, parseInt(batchRequestCount, 10) || 1))} Requests`}
+              </span>
+            </button>
+          </form>
+        </DraggablePanel>
+      )}
+
       {/* Draggable Floating Request Image Dialog */}
       {showRequestImageDialog && (
         <DraggablePanel
@@ -797,6 +1028,7 @@ export function App() {
                 className="close-btn"
                 onClick={() => {
                   setShowRequestImageDialog(false);
+                  setReprogramSourceAcquisitionId(null);
                   setIsPickingGlobeLocation(false);
                 }}
                 aria-label="Close request image dialog"
@@ -807,6 +1039,18 @@ export function App() {
           </div>
 
           <form className="request-image-form" onSubmit={handleSubmitImageRequest}>
+            {reprogramSourceAcquisitionId && (
+              <div className="reprogram-source-banner">
+                <RotateCcw size={13} />
+                <div>
+                  <span className="reprogram-source-label">
+                    REPROGRAMMING FAILED ACQUISITION ID
+                  </span>
+                  <span className="reprogram-source-id">{reprogramSourceAcquisitionId}</span>
+                </div>
+              </div>
+            )}
+
             {/* 1. Longitude & Latitude + Pick on Globe Button */}
             <div className="req-section">
               <span className="req-section-label">TARGET LOCATION (LONGITUDE & LATITUDE)</span>
@@ -865,6 +1109,12 @@ export function App() {
                 value={requestAreaSizeKm}
                 onChange={(e) => setRequestAreaSizeKm(Number(e.target.value))}
               >
+                {![5, 10, 15, 25, 35, 50].includes(requestAreaSizeKm) && (
+                  <option value={requestAreaSizeKm}>
+                    {requestAreaSizeKm} × {requestAreaSizeKm} km (
+                    {requestAreaSizeKm * requestAreaSizeKm} km² — Original Failed Area)
+                  </option>
+                )}
                 <option value={5}>5 × 5 km (25 km² — High Detail)</option>
                 <option value={10}>10 × 10 km (100 km²)</option>
                 <option value={15}>15 × 15 km (225 km²)</option>
@@ -1106,12 +1356,13 @@ export function App() {
         </DraggablePanel>
       )}
 
-      {/* Evaluating Queued Request Indicator Banner (shown during the 10-second evaluation) */}
-      {pendingEvaluationsCount > 0 && (
+      {/* Evaluating Queued Request Indicator Banner (shown while requests are in the queue) */}
+      {(requestsQueue.length > 0 || pendingEvaluationsCount > 0) && (
         <div className="evaluating-queue-banner glass-card" role="status" aria-live="polite">
           <RefreshCw size={15} className="spin accent-cyan" />
           <span>
-            Evaluating acquisition request in orbital queue ({pendingEvaluationsCount} pending)...
+            Evaluating acquisition request in orbital queue (
+            {Math.max(requestsQueue.length, pendingEvaluationsCount)} pending)...
           </span>
         </div>
       )}
@@ -1160,6 +1411,109 @@ export function App() {
           >
             <span>Dismiss</span>
           </button>
+        </DraggablePanel>
+      )}
+
+      {/* Draggable Floating Acquisition Requests Queue Window */}
+      {showRequestsQueueWindow && (
+        <DraggablePanel
+          className="requests-queue-window glass-card"
+          initialPosition={{ x: 430, y: 96 }}
+          ariaLabel="Acquisition Requests Queue Window"
+        >
+          <div className="tooltip-header drag-handle-header">
+            <div className="card-header-left">
+              <ListOrdered size={16} className="accent-cyan" />
+              <span className="tooltip-tag">
+                ACQUISITION REQUESTS QUEUE ({filteredRequestsQueue.length} PENDING)
+              </span>
+            </div>
+            <div className="header-actions">
+              <GripHorizontal size={15} className="drag-grip-icon" />
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setShowRequestsQueueWindow(false)}
+                aria-label="Close acquisition requests queue window"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          <div className="acq-plan-filter-bar">
+            <label htmlFor="queue-owner-filter-select" className="acq-filter-label">
+              <UserIcon size={13} />
+              <span>Filter by Owner:</span>
+            </label>
+            <select
+              id="queue-owner-filter-select"
+              className="acq-user-filter-select"
+              value={queueOwnerFilter}
+              onChange={(e) => setQueueOwnerFilter(e.target.value)}
+            >
+              <option value="ALL">All Owners ({sortedRequestsQueue.length})</option>
+              {users.map((u) => {
+                const count = sortedRequestsQueue.filter(
+                  (r) => r.user_id === u.id || getUserName(r.user_id) === u.name
+                ).length;
+                return (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="acq-plan-list-container">
+            {filteredRequestsQueue.length === 0 ? (
+              <div className="acq-empty">
+                No pending acquisition requests in the queue.
+              </div>
+            ) : (
+              filteredRequestsQueue.map((reqRow, idx) => {
+                const ownerName = getUserName(reqRow.user_id);
+                const sizeKm = (reqRow.width_m / 1000).toFixed(0);
+                const isEvaluating = reqRow.status.toLowerCase() === 'evaluating';
+                const targetTimeStr =
+                  reqRow.time_mode === 'ASAP' || !reqRow.requested_timestamp
+                    ? 'ASAP (Earliest Pass)'
+                    : formatUtcTimestamp(new Date(reqRow.requested_timestamp).getTime());
+                const createdStr = formatUtcTimestamp(new Date(reqRow.created_at).getTime());
+
+                return (
+                  <div key={reqRow.id} className="acq-plan-list-item queue-list-item">
+                    <div className="acq-list-item-top">
+                      <div className="acq-list-sat-group">
+                        <span className="acq-list-index">#{idx + 1}</span>
+                        <span className="acq-list-user-pill">{ownerName}</span>
+                        <span className="acq-list-user-pill">
+                          {reqRow.confirmation_mode || 'manual'}
+                        </span>
+                        <span className="queue-item-coords-badge">
+                          ({reqRow.center_latitude_deg.toFixed(2)}°,{' '}
+                          {reqRow.center_longitude_deg.toFixed(2)}°) • {sizeKm}×{sizeKm} km
+                        </span>
+                      </div>
+                      <span
+                        className={`req-status-badge ${
+                          isEvaluating ? 'evaluating' : 'queued'
+                        }`}
+                      >
+                        {isEvaluating && <RefreshCw size={10} className="spin" />}
+                        <span>{reqRow.status}</span>
+                      </span>
+                    </div>
+                    <div className="acq-list-item-bottom">
+                      <span className="acq-list-time">Target: {targetTimeStr}</span>
+                      <span className="acq-list-coords">Queued: {createdStr.slice(11)}</span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </DraggablePanel>
       )}
 
@@ -1616,24 +1970,36 @@ export function App() {
                     </div>
 
                     <div className="acq-actions-row">
-                      <button
-                        type="button"
-                        className={`acq-action-btn show-image ${isAcquisitionCompleted ? 'enabled' : ''}`}
-                        onClick={() => {
-                          if (isAcquisitionCompleted) {
-                            setShowImagePopup(true);
+                      {isAcquisitionFailed ? (
+                        <button
+                          type="button"
+                          className="acq-action-btn reprogram-acq"
+                          onClick={() => handleOpenReprogramDialog(activeAcquisitionRow)}
+                          title="Open Request Image dialog with this failed acquisition's location to reprogram capture"
+                        >
+                          <RotateCcw size={13} />
+                          <span>Reprogram Acquisition</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`acq-action-btn show-image ${isAcquisitionCompleted ? 'enabled' : ''}`}
+                          onClick={() => {
+                            if (isAcquisitionCompleted) {
+                              setShowImagePopup(true);
+                            }
+                          }}
+                          disabled={!isAcquisitionCompleted}
+                          title={
+                            isAcquisitionCompleted
+                              ? 'Display acquired 256×256 satellite image popup'
+                              : 'Image available once acquisition status is Completed'
                           }
-                        }}
-                        disabled={!isAcquisitionCompleted}
-                        title={
-                          isAcquisitionCompleted
-                            ? 'Display acquired 256×256 satellite image popup'
-                            : 'Image available once acquisition status is Completed'
-                        }
-                      >
-                        <ImageIcon size={13} />
-                        <span>Show Image</span>
-                      </button>
+                        >
+                          <ImageIcon size={13} />
+                          <span>Show Image</span>
+                        </button>
+                      )}
                     </div>
                   </>
                 )}
@@ -1720,6 +2086,17 @@ export function App() {
               </span>
             </div>
           </div>
+
+          <button
+            type="button"
+            className="acq-action-btn mark-failed-btn"
+            disabled={markingFailed}
+            onClick={handleMarkAcquisitionFailed}
+            title="Mark this completed acquisition as Failed so it can be reprogrammed"
+          >
+            <AlertCircle size={13} />
+            <span>{markingFailed ? 'Marking as Failed...' : 'Mark as Failed'}</span>
+          </button>
         </DraggablePanel>
       )}
 

@@ -78,8 +78,9 @@ export interface AcquisitionPlanRow {
   center_latitude_deg: number;
   width_m: number;
   height_m: number;
-  status: 'Reserved' | 'Pending' | 'Acquiring' | 'Completed' | 'Failed' | string;
+  status: 'Reserved' | 'Pending' | 'Acquiring' | 'Completed' | 'Failed' | 'Reprogrammed' | string;
   acquired_image: string | null;
+  reprogrammed_from_id?: string | null;
 }
 
 export interface CreateAcquisitionRequestInput {
@@ -89,6 +90,8 @@ export interface CreateAcquisitionRequestInput {
   height_m: number;
   time_mode: 'ASAP' | 'ABSOLUTE';
   requested_timestamp?: string | null;
+  confirmation_mode?: 'manual' | 'auto';
+  reprogrammed_from_id?: string | null;
 }
 
 export interface AcquisitionRequestEvaluationResult {
@@ -110,6 +113,26 @@ export interface AcquisitionCancelEventPayload {
   acquisition_timestamp: string;
   reason: 'timeout' | 'acquisition_time_reached' | 'user_canceled';
   message: string;
+}
+
+export interface AcquisitionRequestQueueItem {
+  id: string;
+  user_id: string;
+  center_longitude_deg: number;
+  center_latitude_deg: number;
+  width_m: number;
+  height_m: number;
+  time_mode: 'ASAP' | 'ABSOLUTE';
+  requested_timestamp: string | null;
+  confirmation_mode?: 'manual' | 'auto';
+  reprogrammed_from_id?: string | null;
+  created_at: string;
+  status: 'Queued' | 'Evaluating' | string;
+}
+
+export interface AcquisitionRequestQueueResponse {
+  data: AcquisitionRequestQueueItem[];
+  total: number;
 }
 
 export interface AcquisitionPlanResponse {
@@ -351,6 +374,14 @@ export async function fetchAcquisitionById(id: string): Promise<{ data: Acquisit
   return response.json();
 }
 
+export async function fetchAcquisitionRequestsQueue(): Promise<AcquisitionRequestQueueResponse> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-requests`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch acquisition requests queue: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export async function submitAcquisitionRequest(
   payload: CreateAcquisitionRequestInput
 ): Promise<{
@@ -408,15 +439,31 @@ export async function cancelReservedAcquisition(
   return response.json();
 }
 
+export async function markAcquisitionFailed(
+  id: string
+): Promise<{ status: string; data: AcquisitionPlanRow }> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/${encodeURIComponent(id)}/fail`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to mark acquisition as failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 /**
  * Subscribes to Server-Sent Events (SSE) backed by NATS JetStream (ACQUISITION_STREAM)
  * to receive real-time acquisition plan state updates (`Reserved`, `Pending`, `Acquiring`, `Completed`),
- * request evaluation notifications (`request_evaluated`), and cancellation events (`cancel`).
+ * request evaluation notifications (`request_evaluated`), cancellation events (`cancel`),
+ * and request queue updates (`queue_updated`).
  */
 export function subscribeToAcquisitionUpdates(
   onUpdate: (row: AcquisitionPlanRow) => void,
   onRequestEvaluated?: (evaluation: AcquisitionRequestEvaluationResult) => void,
-  onCanceled?: (cancelEvent: AcquisitionCancelEventPayload) => void
+  onCanceled?: (cancelEvent: AcquisitionCancelEventPayload) => void,
+  onQueueUpdated?: (queue: AcquisitionRequestQueueItem[]) => void
 ): () => void {
   const eventSource = new EventSource(`${API_BASE_URL}/acquisition-plan/stream`);
   eventSource.onmessage = (event) => {
@@ -448,6 +495,16 @@ export function subscribeToAcquisitionUpdates(
       }
     } catch (err) {
       console.error('Failed to parse SSE cancel event:', err);
+    }
+  });
+  eventSource.addEventListener('queue_updated', (event: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(event.data);
+      if (parsed && Array.isArray(parsed.queue)) {
+        onQueueUpdated?.(parsed.queue);
+      }
+    } catch (err) {
+      console.error('Failed to parse SSE queue_updated event:', err);
     }
   });
   return () => {

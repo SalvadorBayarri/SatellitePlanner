@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS acquisition_plan (
   width_m FLOAT NOT NULL,
   height_m FLOAT NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'Pending',
-  acquired_image TEXT
+  acquired_image TEXT,
+  reprogrammed_from_id UUID
 );
 
 CREATE TABLE IF NOT EXISTS acquisition_requests (
@@ -101,8 +102,13 @@ CREATE TABLE IF NOT EXISTS acquisition_requests (
   height_m FLOAT NOT NULL,
   time_mode VARCHAR(32) NOT NULL,
   requested_timestamp TIMESTAMPTZ,
+  confirmation_mode VARCHAR(32) NOT NULL DEFAULT 'manual',
+  reprogrammed_from_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   status VARCHAR(32) NOT NULL DEFAULT 'Queued'
 );
 
 ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS reprogrammed_from_id UUID;
+ALTER TABLE acquisition_requests ADD COLUMN IF NOT EXISTS confirmation_mode VARCHAR(32) DEFAULT 'manual';
+ALTER TABLE acquisition_requests ADD COLUMN IF NOT EXISTS reprogrammed_from_id UUID;

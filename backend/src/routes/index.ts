@@ -10,9 +10,11 @@ import {
   getAcquisitionById,
   initializeAcquisitionPlan,
   streamAcquisitionPlanUpdates,
+  getAcquisitionRequestsQueue,
   submitAcquisitionRequest,
   confirmReservedAcquisition,
   cancelReservedAcquisition,
+  markAcquisitionAsFailed,
 } from '../controllers/geoEventsController';
 
 const router = Router();
@@ -27,8 +29,10 @@ router.get('/acquisition-plan', getAcquisitionPlan);
 router.get('/acquisition-plan/stream', streamAcquisitionPlanUpdates);
 router.post('/acquisition-plan/:id/confirm', confirmReservedAcquisition);
 router.post('/acquisition-plan/:id/cancel', cancelReservedAcquisition);
+router.post('/acquisition-plan/:id/fail', markAcquisitionAsFailed);
 router.get('/acquisition-plan/:id', getAcquisitionById);
 router.post('/acquisition-plan/init', initializeAcquisitionPlan);
+router.get('/acquisition-requests', getAcquisitionRequestsQueue);
 router.post('/acquisition-requests', submitAcquisitionRequest);
 
 export default router;

@@ -167,33 +167,61 @@ async function runExecutorStep(generation: number): Promise<void> {
       const userId = row.user_id || DEFAULT_SYSTEM_USER_ID;
 
       if (nowMs >= endAcquireMs) {
-        // Acquisition window has finished -> fetch 256x256 satellite image, mark 'Completed', and publish to NATS JetStream
-        const imageDataUri = await fetchSatelliteImage256(lat, lng, widthM, heightM);
-        if (generation !== currentGeneration) return;
+        // Acquisition window has finished -> 2/3 probability of 'Completed' (with image), 1/3 probability of 'Failed' (no image)
+        const isCompleted = Math.random() < 2 / 3;
 
-        await pool.query(
-          `UPDATE acquisition_plan
-           SET status = $1, acquired_image = $2
-           WHERE id = $3`,
-          ['Completed', imageDataUri, row.id]
-        );
-        console.log(
-          `[AcquisitionExecutor] Acquisition ${row.id} (sat ${String(row.satellite_id).slice(-4)}) -> Completed (256x256 image stored)`
-        );
+        if (isCompleted) {
+          const imageDataUri = await fetchSatelliteImage256(lat, lng, widthM, heightM);
+          if (generation !== currentGeneration) return;
 
-        await publishAcquisitionUpdated({
-          id: row.id,
-          satellite_id: row.satellite_id,
-          user_id: userId,
-          acquisition_timestamp: acqTimeIso,
-          duration_seconds: durationSeconds,
-          center_longitude_deg: lng,
-          center_latitude_deg: lat,
-          width_m: widthM,
-          height_m: heightM,
-          status: 'Completed',
-          acquired_image: imageDataUri,
-        });
+          await pool.query(
+            `UPDATE acquisition_plan
+             SET status = $1, acquired_image = $2
+             WHERE id = $3`,
+            ['Completed', imageDataUri, row.id]
+          );
+          console.log(
+            `[AcquisitionExecutor] Acquisition ${row.id} (sat ${String(row.satellite_id).slice(-4)}) -> Completed (256x256 image stored)`
+          );
+
+          await publishAcquisitionUpdated({
+            id: row.id,
+            satellite_id: row.satellite_id,
+            user_id: userId,
+            acquisition_timestamp: acqTimeIso,
+            duration_seconds: durationSeconds,
+            center_longitude_deg: lng,
+            center_latitude_deg: lat,
+            width_m: widthM,
+            height_m: heightM,
+            status: 'Completed',
+            acquired_image: imageDataUri,
+          });
+        } else {
+          await pool.query(
+            `UPDATE acquisition_plan
+             SET status = $1, acquired_image = NULL
+             WHERE id = $2`,
+            ['Failed', row.id]
+          );
+          console.log(
+            `[AcquisitionExecutor] Acquisition ${row.id} (sat ${String(row.satellite_id).slice(-4)}) -> Failed (no image captured)`
+          );
+
+          await publishAcquisitionUpdated({
+            id: row.id,
+            satellite_id: row.satellite_id,
+            user_id: userId,
+            acquisition_timestamp: acqTimeIso,
+            duration_seconds: durationSeconds,
+            center_longitude_deg: lng,
+            center_latitude_deg: lat,
+            width_m: widthM,
+            height_m: heightM,
+            status: 'Failed',
+            acquired_image: null,
+          });
+        }
       } else if (nowMs >= startAcquireMs) {
         // Inside acquisition window [T - D/2, T + D/2) -> ensure status is 'Acquiring' and publish to NATS JetStream
         if (status !== 'Acquiring') {

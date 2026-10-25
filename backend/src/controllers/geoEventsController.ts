@@ -13,6 +13,9 @@ import {
   triggerRequestQueueProcessor,
   clearReservationTimer,
   clearAllReservationTimers,
+  fetchCurrentRequestQueue,
+  broadcastCurrentRequestQueue,
+  markOriginalAcquisitionAsReprogrammed,
 } from '../services/requestQueueProcessor';
 import { isPointOnLand } from '../utils/landMask';
 
@@ -292,6 +295,7 @@ function mapAcquisitionRow(row: any) {
     height_m: Number(row.height_m),
     status: String(row.status),
     acquired_image: row.acquired_image ?? null,
+    reprogrammed_from_id: row.reprogrammed_from_id ? String(row.reprogrammed_from_id) : null,
   };
 }
 
@@ -507,6 +511,7 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
     clearAllReservationTimers();
     await pool.query('DELETE FROM acquisition_plan');
     await pool.query('DELETE FROM acquisition_requests');
+    await broadcastCurrentRequestQueue();
 
     // Look up the "system" user ID
     const systemUserResult = await pool.query(
@@ -677,6 +682,8 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
       height_m,
       time_mode,
       requested_timestamp,
+      confirmation_mode,
+      reprogrammed_from_id,
       user_id,
     } = req.body;
 
@@ -685,6 +692,12 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
     const widthM = Number(width_m);
     const heightM = Number(height_m);
     const mode = String(time_mode || 'ASAP').toUpperCase() === 'ABSOLUTE' ? 'ABSOLUTE' : 'ASAP';
+    const confirmMode: 'manual' | 'auto' =
+      String(confirmation_mode || 'manual').toLowerCase() === 'auto' ? 'auto' : 'manual';
+    const reprogrammedFromId: string | null =
+      typeof reprogrammed_from_id === 'string' && reprogrammed_from_id.trim()
+        ? reprogrammed_from_id.trim()
+        : null;
 
     if (Number.isNaN(lat) || lat < -90 || lat > 90) {
       res.status(400).json({ error: 'Field "latitude" must be between -90 and 90.' });
@@ -737,9 +750,11 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
          height_m,
          time_mode,
          requested_timestamp,
+         confirmation_mode,
+         reprogrammed_from_id,
          created_at,
          status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         requestId,
         resolvedUserId,
@@ -749,12 +764,15 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
         heightM,
         mode,
         parsedRequestedIso,
+        confirmMode,
+        reprogrammedFromId,
         createdAtIso,
         'Queued',
       ]
     );
 
-    // Trigger FIFO queue processor asynchronously
+    // Broadcast updated queue to connected clients & trigger FIFO queue processor asynchronously
+    await broadcastCurrentRequestQueue();
     triggerRequestQueueProcessor();
 
     res.status(202).json({
@@ -768,6 +786,8 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
         height_m: heightM,
         time_mode: mode,
         requested_timestamp: parsedRequestedIso,
+        confirmation_mode: confirmMode,
+        reprogrammed_from_id: reprogrammedFromId,
         created_at: createdAtIso,
         status: 'Queued',
       },
@@ -776,6 +796,26 @@ export async function submitAcquisitionRequest(req: Request, res: Response): Pro
     console.error('[Controller] Error submitting acquisition request:', error);
     res.status(500).json({
       error: 'Failed to enqueue acquisition request',
+      details: error?.message,
+    });
+  }
+}
+
+/**
+ * Returns the active queue of pending acquisition requests (`Queued` and `Evaluating`),
+ * ordered chronologically by `created_at ASC`.
+ */
+export async function getAcquisitionRequestsQueue(_req: Request, res: Response): Promise<void> {
+  try {
+    const queue = await fetchCurrentRequestQueue();
+    res.status(200).json({
+      data: queue,
+      total: queue.length,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error fetching acquisition_requests queue:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve acquisition requests queue',
       details: error?.message,
     });
   }
@@ -804,7 +844,8 @@ export async function confirmReservedAcquisition(req: Request, res: Response): P
          width_m,
          height_m,
          status,
-         acquired_image
+         acquired_image,
+         reprogrammed_from_id
        FROM acquisition_plan
        WHERE id = $1`,
       [id]
@@ -822,6 +863,11 @@ export async function confirmReservedAcquisition(req: Request, res: Response): P
       [id]
     );
 
+    const reprogrammedFromId = existingRes.rows[0].reprogrammed_from_id
+      ? String(existingRes.rows[0].reprogrammed_from_id)
+      : null;
+    await markOriginalAcquisitionAsReprogrammed(reprogrammedFromId);
+
     const updatedRow = mapAcquisitionRow({
       ...existingRes.rows[0],
       status: 'Pending',
@@ -838,6 +884,69 @@ export async function confirmReservedAcquisition(req: Request, res: Response): P
     console.error('[Controller] Error confirming reserved acquisition:', error);
     res.status(500).json({
       error: 'Failed to confirm reserved acquisition',
+      details: error?.message,
+    });
+  }
+}
+
+/**
+ * Marks an acquisition entry in acquisition_plan as 'Failed' (clearing its acquired_image)
+ * and broadcasts the update via NATS JetStream + SSE.
+ */
+export async function markAcquisitionAsFailed(req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const id = String(req.params.id);
+
+    const existingRes = await pool.query(
+      `SELECT
+         id,
+         satellite_id,
+         user_id,
+         acquisition_timestamp,
+         duration_seconds,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         status,
+         acquired_image,
+         reprogrammed_from_id
+       FROM acquisition_plan
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (existingRes.rows.length === 0) {
+      res.status(404).json({
+        error: 'Acquisition plan row not found.',
+      });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE acquisition_plan
+       SET status = 'Failed', acquired_image = NULL
+       WHERE id = $1`,
+      [id]
+    );
+
+    const updatedRow = mapAcquisitionRow({
+      ...existingRes.rows[0],
+      status: 'Failed',
+      acquired_image: null,
+    });
+
+    await publishAcquisitionUpdated(updatedRow);
+
+    res.status(200).json({
+      status: 'failed',
+      data: updatedRow,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error marking acquisition as failed:', error);
+    res.status(500).json({
+      error: 'Failed to mark acquisition as failed',
       details: error?.message,
     });
   }

@@ -2,10 +2,13 @@ import crypto from 'crypto';
 import { getPool } from '../db';
 import {
   AcquisitionPlanUpdatePayload,
+  AcquisitionRequestRowPayload,
   publishAcquisitionUpdated,
   publishAcquisitionRequestEvaluated,
   publishAcquisitionCanceled,
+  publishAcquisitionQueueUpdated,
 } from '../events/nats';
+import { startAcquisitionPlanExecutor } from './acquisitionExecutor';
 
 const ORBIT_PERIOD_MINUTES = 97;
 const COVERAGE_SIZE_METERS = 300_000; // 300 km x 300 km satellite capture footprint
@@ -13,6 +16,7 @@ const METERS_PER_DEG_LAT = 111_320;
 const ACQUISITION_DURATION_SECONDS = 20;
 const REQUEST_PROCESSING_DELAY_MS = 10_000; // 10-second simulated evaluation delay for demo purposes
 const RESERVATION_CONFIRM_TIMEOUT_MS = 60_000; // 1-minute confirmation window before auto-cancel
+const AUTO_CONFIRM_DELAY_MS = 5_000; // 5-second delay after evaluation before auto-confirming "auto" mode requests
 const DEFAULT_DEMO_USER_ID = 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02';
 
 const reservationExpirationTimers = new Map<string, NodeJS.Timeout>();
@@ -122,8 +126,126 @@ interface QueuedRequestRow {
   height_m: number;
   time_mode: 'ASAP' | 'ABSOLUTE';
   requested_timestamp: string | null;
+  confirmation_mode: 'manual' | 'auto';
+  reprogrammed_from_id: string | null;
   created_at: string;
   status: string;
+}
+
+/**
+ * If a newly confirmed acquisition was reprogrammed from a failed acquisition,
+ * marks that original acquisition as 'Reprogrammed' and broadcasts the update.
+ */
+export async function markOriginalAcquisitionAsReprogrammed(
+  reprogrammedFromId: string | null | undefined
+): Promise<void> {
+  if (!reprogrammedFromId) return;
+
+  try {
+    const pool = getPool();
+    await pool.query(
+      `UPDATE acquisition_plan
+       SET status = 'Reprogrammed'
+       WHERE id = $1`,
+      [reprogrammedFromId]
+    );
+
+    const origRes = await pool.query(
+      `SELECT
+         id,
+         satellite_id,
+         user_id,
+         acquisition_timestamp,
+         duration_seconds,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         status,
+         acquired_image,
+         reprogrammed_from_id
+       FROM acquisition_plan
+       WHERE id = $1`,
+      [reprogrammedFromId]
+    );
+
+    if (origRes.rows.length > 0) {
+      const r = origRes.rows[0];
+      const acqTimeIso =
+        r.acquisition_timestamp instanceof Date
+          ? r.acquisition_timestamp.toISOString()
+          : String(r.acquisition_timestamp);
+      await publishAcquisitionUpdated({
+        id: String(r.id),
+        satellite_id: String(r.satellite_id),
+        user_id: String(r.user_id || DEFAULT_DEMO_USER_ID),
+        acquisition_timestamp: acqTimeIso,
+        duration_seconds: Number(r.duration_seconds || ACQUISITION_DURATION_SECONDS),
+        center_longitude_deg: Number(r.center_longitude_deg),
+        center_latitude_deg: Number(r.center_latitude_deg),
+        width_m: Number(r.width_m),
+        height_m: Number(r.height_m),
+        status: 'Reprogrammed',
+        acquired_image: r.acquired_image || null,
+        reprogrammed_from_id: r.reprogrammed_from_id ? String(r.reprogrammed_from_id) : null,
+      });
+    }
+  } catch (err) {
+    console.error('[RequestQueue] Failed to mark original acquisition as Reprogrammed:', err);
+  }
+}
+
+/**
+ * Schedules internal confirmation 5 seconds after evaluation finishes for requests with confirmation_mode = 'auto'.
+ */
+function scheduleAutoConfirmationTimer(
+  acquisitionId: string,
+  requestId: string,
+  reservedPayload: AcquisitionPlanUpdatePayload,
+  reprogrammedFromId: string | null
+): void {
+  clearReservationTimer(acquisitionId);
+
+  const timer = setTimeout(async () => {
+    reservationExpirationTimers.delete(acquisitionId);
+    try {
+      const pool = getPool();
+      const checkRes = await pool.query(
+        `SELECT id, status FROM acquisition_plan WHERE id = $1`,
+        [acquisitionId]
+      );
+      if (checkRes.rows.length === 0) {
+        return;
+      }
+
+      await pool.query(
+        `UPDATE acquisition_plan SET status = 'Pending' WHERE id = $1`,
+        [acquisitionId]
+      );
+      await pool.query(
+        `UPDATE acquisition_requests SET status = 'Confirmed' WHERE id = $1`,
+        [requestId]
+      );
+
+      await markOriginalAcquisitionAsReprogrammed(reprogrammedFromId);
+
+      const confirmedPayload: AcquisitionPlanUpdatePayload = {
+        ...reservedPayload,
+        status: 'Pending',
+      };
+
+      console.log(
+        `[RequestQueue] Auto-confirmed request ${requestId} -> acquisition ${acquisitionId} is now Pending`
+      );
+
+      await publishAcquisitionUpdated(confirmedPayload);
+      startAcquisitionPlanExecutor();
+    } catch (err) {
+      console.error('[RequestQueue] Error auto-confirming request:', err);
+    }
+  }, AUTO_CONFIRM_DELAY_MS);
+
+  reservationExpirationTimers.set(acquisitionId, timer);
 }
 
 function normalizeLongitude(deg: number): number {
@@ -419,6 +541,67 @@ function evaluateRequestFeasibility(
 let isProcessingQueue = false;
 
 /**
+ * Queries all active pending acquisition requests (`Queued` or `Evaluating`) ordered by `created_at ASC`.
+ */
+export async function fetchCurrentRequestQueue(): Promise<AcquisitionRequestRowPayload[]> {
+  const pool = getPool();
+  const res = await pool.query(
+    `SELECT
+       id,
+       user_id,
+       center_longitude_deg,
+       center_latitude_deg,
+       width_m,
+       height_m,
+       time_mode,
+       requested_timestamp,
+       confirmation_mode,
+       reprogrammed_from_id,
+       created_at,
+       status
+     FROM acquisition_requests
+     WHERE status IN ('Queued', 'Evaluating')
+     ORDER BY created_at ASC`
+  );
+
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    user_id: String(r.user_id || DEFAULT_DEMO_USER_ID),
+    center_longitude_deg: Number(r.center_longitude_deg),
+    center_latitude_deg: Number(r.center_latitude_deg),
+    width_m: Number(r.width_m),
+    height_m: Number(r.height_m),
+    time_mode: (String(r.time_mode).toUpperCase() === 'ABSOLUTE' ? 'ABSOLUTE' : 'ASAP') as
+      | 'ASAP'
+      | 'ABSOLUTE',
+    requested_timestamp: r.requested_timestamp
+      ? r.requested_timestamp instanceof Date
+        ? r.requested_timestamp.toISOString()
+        : String(r.requested_timestamp)
+      : null,
+    confirmation_mode: (String(r.confirmation_mode || 'manual').toLowerCase() === 'auto'
+      ? 'auto'
+      : 'manual') as 'manual' | 'auto',
+    reprogrammed_from_id: r.reprogrammed_from_id ? String(r.reprogrammed_from_id) : null,
+    created_at:
+      r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+    status: String(r.status),
+  }));
+}
+
+/**
+ * Broadcasts the current active request queue to connected clients via NATS JetStream + SSE.
+ */
+export async function broadcastCurrentRequestQueue(): Promise<void> {
+  try {
+    const queue = await fetchCurrentRequestQueue();
+    await publishAcquisitionQueueUpdated({ queue });
+  } catch (err) {
+    console.error('[RequestQueue] Failed to broadcast request queue update:', err);
+  }
+}
+
+/**
  * Triggers the background FIFO processor that takes the oldest 'Queued' request,
  * evaluates orbital feasibility, inserts a 'Reserved' row into acquisition_plan,
  * and pushes the evaluation result to the frontend via NATS JetStream + SSE.
@@ -448,6 +631,8 @@ async function processQueueLoop(): Promise<void> {
            height_m,
            time_mode,
            requested_timestamp,
+           confirmation_mode,
+           reprogrammed_from_id,
            created_at,
            status
          FROM acquisition_requests
@@ -476,6 +661,12 @@ async function processQueueLoop(): Promise<void> {
             ? rawReq.requested_timestamp.toISOString()
             : String(rawReq.requested_timestamp)
           : null,
+        confirmation_mode: (String(rawReq.confirmation_mode || 'manual').toLowerCase() === 'auto'
+          ? 'auto'
+          : 'manual') as 'manual' | 'auto',
+        reprogrammed_from_id: rawReq.reprogrammed_from_id
+          ? String(rawReq.reprogrammed_from_id)
+          : null,
         created_at:
           rawReq.created_at instanceof Date
             ? rawReq.created_at.toISOString()
@@ -486,6 +677,7 @@ async function processQueueLoop(): Promise<void> {
       await pool.query(`UPDATE acquisition_requests SET status = 'Evaluating' WHERE id = $1`, [
         reqRow.id,
       ]);
+      await broadcastCurrentRequestQueue();
 
       console.log(
         `[RequestQueue] Processing request ${reqRow.id} (simulating ${REQUEST_PROCESSING_DELAY_MS / 1000}s orbital evaluation)...`
@@ -561,8 +753,9 @@ async function processQueueLoop(): Promise<void> {
            width_m,
            height_m,
            status,
-           acquired_image
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+           acquired_image,
+           reprogrammed_from_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           reservedAcquisitionId,
           match.satelliteId,
@@ -575,12 +768,14 @@ async function processQueueLoop(): Promise<void> {
           reqRow.height_m,
           'Reserved',
           null,
+          reqRow.reprogrammed_from_id,
         ]
       );
 
       await pool.query(`UPDATE acquisition_requests SET status = 'Evaluated' WHERE id = $1`, [
         reqRow.id,
       ]);
+      await broadcastCurrentRequestQueue();
 
       const reservedPayload: AcquisitionPlanUpdatePayload = {
         id: reservedAcquisitionId,
@@ -594,33 +789,45 @@ async function processQueueLoop(): Promise<void> {
         height_m: reqRow.height_m,
         status: 'Reserved',
         acquired_image: null,
+        reprogrammed_from_id: reqRow.reprogrammed_from_id,
       };
 
       console.log(
-        `[RequestQueue] Evaluated request ${reqRow.id} (${reqRow.time_mode}) -> SAT=${match.satelliteId}, time=${feasibleIso}, fulfilledAsRequested=${match.fulfilledAsRequested}, cost=${estimatedCostPoints} pts`
+        `[RequestQueue] Evaluated request ${reqRow.id} (${reqRow.time_mode}, confirmation=${reqRow.confirmation_mode}) -> SAT=${match.satelliteId}, time=${feasibleIso}, fulfilledAsRequested=${match.fulfilledAsRequested}, cost=${estimatedCostPoints} pts`
       );
 
-      // Schedule automatic expiration if not confirmed within 1 minute or before acquisition_timestamp
-      scheduleReservationExpirationTimer(
-        reservedAcquisitionId,
-        reqRow.id,
-        match.satelliteId,
-        match.feasibleTimeMs
-      );
+      if (reqRow.confirmation_mode === 'manual') {
+        // Schedule automatic expiration if not confirmed within 1 minute or before acquisition_timestamp
+        scheduleReservationExpirationTimer(
+          reservedAcquisitionId,
+          reqRow.id,
+          match.satelliteId,
+          match.feasibleTimeMs
+        );
 
-      // 5. Notify connected clients of both the new Reserved row and the Evaluation Result popup
-      await publishAcquisitionUpdated(reservedPayload);
-      await publishAcquisitionRequestEvaluated({
-        request_id: reqRow.id,
-        queued_at: reqRow.created_at,
-        evaluated_at: new Date().toISOString(),
-        time_mode: reqRow.time_mode,
-        requested_timestamp: reqRow.requested_timestamp,
-        fulfilled_as_requested: match.fulfilledAsRequested,
-        feasible_timestamp: feasibleIso,
-        estimated_cost_points: estimatedCostPoints,
-        acquisition: reservedPayload,
-      });
+        // Notify connected clients of both the new Reserved row and the Evaluation Result popup
+        await publishAcquisitionUpdated(reservedPayload);
+        await publishAcquisitionRequestEvaluated({
+          request_id: reqRow.id,
+          queued_at: reqRow.created_at,
+          evaluated_at: new Date().toISOString(),
+          time_mode: reqRow.time_mode,
+          requested_timestamp: reqRow.requested_timestamp,
+          fulfilled_as_requested: match.fulfilledAsRequested,
+          feasible_timestamp: feasibleIso,
+          estimated_cost_points: estimatedCostPoints,
+          acquisition: reservedPayload,
+        });
+      } else {
+        // For "auto" confirmation mode, do not prompt the frontend for confirmation;
+        // 5 seconds after evaluation finishes, internally confirm the request and add it to the plan.
+        scheduleAutoConfirmationTimer(
+          reservedAcquisitionId,
+          reqRow.id,
+          reservedPayload,
+          reqRow.reprogrammed_from_id
+        );
+      }
     }
   } catch (err) {
     console.error('[RequestQueue] Error while processing acquisition request queue:', err);
