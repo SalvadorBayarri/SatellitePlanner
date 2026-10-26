@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS satellite_fleet (
   orbit_orientation_deg FLOAT NOT NULL,
   reference_latitude_deg FLOAT NOT NULL,
   reference_direction INT NOT NULL,
-  reference_timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  reference_timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  status VARCHAR(32) NOT NULL DEFAULT 'active'
 );
 
 INSERT INTO satellite_fleet (id, orbit_altitude_km, orbit_orientation_deg, reference_latitude_deg, reference_direction, reference_timestamp) VALUES
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS acquisition_requests (
   status VARCHAR(32) NOT NULL DEFAULT 'Queued'
 );
 
+ALTER TABLE satellite_fleet ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'active';
 ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS user_id UUID;
 ALTER TABLE acquisition_plan ADD COLUMN IF NOT EXISTS reprogrammed_from_id UUID;
 ALTER TABLE acquisition_requests ADD COLUMN IF NOT EXISTS confirmation_mode VARCHAR(32) DEFAULT 'manual';

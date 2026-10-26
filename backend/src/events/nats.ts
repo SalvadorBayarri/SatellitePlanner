@@ -78,6 +78,18 @@ export interface AcquisitionQueueUpdatePayload {
   queue: AcquisitionRequestRowPayload[];
 }
 
+export interface SatelliteStatusUpdatePayload {
+  id: string;
+  orbit_altitude_km: number;
+  orbit_orientation_deg: number;
+  reference_latitude_deg: number;
+  reference_direction: 1 | -1;
+  reference_timestamp: string;
+  status: 'active' | 'disabled';
+  reprogrammed_count?: number;
+  reassigned_count?: number;
+}
+
 let nc: NatsConnection | null = null;
 let js: JetStreamClient | null = null;
 let jsm: JetStreamManager | null = null;
@@ -153,6 +165,20 @@ function broadcastAcquisitionQueueUpdateToSseClients(
 ): void {
   if (acquisitionSseClients.size === 0) return;
   const sseData = `event: queue_updated\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of acquisitionSseClients) {
+    try {
+      clientRes.write(sseData);
+    } catch {
+      acquisitionSseClients.delete(clientRes);
+    }
+  }
+}
+
+function broadcastSatelliteStatusUpdateToSseClients(
+  payload: SatelliteStatusUpdatePayload
+): void {
+  if (acquisitionSseClients.size === 0) return;
+  const sseData = `event: satellite_status_updated\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const clientRes of acquisitionSseClients) {
     try {
       clientRes.write(sseData);
@@ -383,6 +409,36 @@ export async function publishAcquisitionQueueUpdated(
   }
 }
 
+/**
+ * Publishes a satellite status change ('active' | 'disabled') to NATS JetStream
+ * (acquisition.plan.satellite_status_updated) and fans out via SSE to connected clients.
+ */
+export async function publishSatelliteStatusUpdated(
+  payload: SatelliteStatusUpdatePayload
+): Promise<void> {
+  if (!js) {
+    broadcastSatelliteStatusUpdateToSseClients(payload);
+    return;
+  }
+
+  try {
+    const pubAck = await js.publish(
+      config.acquisitionSubjectSatelliteStatusUpdated,
+      sc.encode(JSON.stringify(payload))
+    );
+    publishedCount++;
+    console.log(
+      `[NATS Publisher] Published satellite status update (${payload.id} -> ${payload.status}) to ${config.acquisitionSubjectSatelliteStatusUpdated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
+    );
+  } catch (err) {
+    console.warn(
+      '[NATS Publisher] Failed to publish satellite status update to JetStream, using direct SSE broadcast:',
+      err
+    );
+    broadcastSatelliteStatusUpdateToSseClients(payload);
+  }
+}
+
 async function startDurableConsumer(): Promise<void> {
   if (!js) return;
 
@@ -450,6 +506,8 @@ async function startAcquisitionStreamConsumer(): Promise<void> {
         broadcastAcquisitionCancelToSseClients(parsed as AcquisitionPlanCancelPayload);
       } else if (msg.subject === config.acquisitionSubjectQueueUpdated) {
         broadcastAcquisitionQueueUpdateToSseClients(parsed as AcquisitionQueueUpdatePayload);
+      } else if (msg.subject === config.acquisitionSubjectSatelliteStatusUpdated) {
+        broadcastSatelliteStatusUpdateToSseClients(parsed as SatelliteStatusUpdatePayload);
       } else {
         broadcastAcquisitionUpdateToSseClients(parsed as AcquisitionPlanUpdatePayload);
       }

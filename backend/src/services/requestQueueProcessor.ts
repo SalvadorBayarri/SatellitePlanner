@@ -684,7 +684,7 @@ async function processQueueLoop(): Promise<void> {
       );
       await new Promise((resolve) => setTimeout(resolve, REQUEST_PROCESSING_DELAY_MS));
 
-      // 2. Load satellite fleet and existing active commitments
+      // 2. Load active satellite fleet and existing active commitments
       const [fleetResult, commitmentsResult] = await Promise.all([
         pool.query(
           `SELECT
@@ -695,6 +695,7 @@ async function processQueueLoop(): Promise<void> {
              reference_direction,
              reference_timestamp
            FROM satellite_fleet
+           WHERE COALESCE(LOWER(status), 'active') = 'active'
            ORDER BY orbit_orientation_deg ASC`
         ),
         pool.query(
@@ -834,4 +835,381 @@ async function processQueueLoop(): Promise<void> {
   } finally {
     isProcessingQueue = false;
   }
+}
+
+/**
+ * When a satellite is deactivated (status -> 'disabled'), automatically reprograms all of its
+ * pending acquisitions in 'ASAP' mode across the remaining active satellites without confirmation.
+ * Marks the disabled satellite's original pending rows as 'Reprogrammed' and creates new 'Pending' rows.
+ * Returns the number of reprogrammed acquisition items.
+ */
+export async function reprogramPendingAcquisitionsForDisabledSatellite(
+  disabledSatelliteId: string
+): Promise<number> {
+  const pool = getPool();
+
+  // 1. Find all Pending (or Reserved) acquisitions assigned to the disabled satellite
+  const pendingRes = await pool.query(
+    `SELECT
+       id,
+       satellite_id,
+       user_id,
+       acquisition_timestamp,
+       duration_seconds,
+       center_longitude_deg,
+       center_latitude_deg,
+       width_m,
+       height_m,
+       status
+     FROM acquisition_plan
+     WHERE satellite_id = $1
+       AND status IN ('Pending', 'Reserved')
+     ORDER BY acquisition_timestamp ASC`,
+    [disabledSatelliteId]
+  );
+
+  if (pendingRes.rows.length === 0) {
+    return 0;
+  }
+
+  // 2. Load all active satellites (excluding the disabled satellite) and their existing commitments
+  const [fleetRes, commitmentsRes] = await Promise.all([
+    pool.query(
+      `SELECT
+         id,
+         orbit_altitude_km,
+         orbit_orientation_deg,
+         reference_latitude_deg,
+         reference_direction,
+         reference_timestamp
+       FROM satellite_fleet
+       WHERE COALESCE(LOWER(status), 'active') = 'active'
+         AND id <> $1
+       ORDER BY orbit_orientation_deg ASC`,
+      [disabledSatelliteId]
+    ),
+    pool.query(
+      `SELECT id, satellite_id, acquisition_timestamp, duration_seconds
+       FROM acquisition_plan
+       WHERE status IN ('Pending', 'Acquiring', 'Reserved')
+         AND satellite_id <> $1`,
+      [disabledSatelliteId]
+    ),
+  ]);
+
+  const activeSatellites: SatelliteRow[] = fleetRes.rows.map((r) => ({
+    id: String(r.id),
+    orbit_altitude_km: Number(r.orbit_altitude_km),
+    orbit_orientation_deg: Number(r.orbit_orientation_deg),
+    reference_latitude_deg: Number(r.reference_latitude_deg),
+    reference_direction: Number(r.reference_direction) as 1 | -1,
+    reference_timestamp:
+      r.reference_timestamp instanceof Date
+        ? r.reference_timestamp.toISOString()
+        : String(r.reference_timestamp),
+  }));
+
+  if (activeSatellites.length === 0) {
+    return 0;
+  }
+
+  const commitmentsBySat = new Map<string, ExistingCommitment[]>();
+  for (const c of commitmentsRes.rows) {
+    const satId = String(c.satellite_id);
+    const list = commitmentsBySat.get(satId) || [];
+    list.push({
+      id: String(c.id),
+      satellite_id: satId,
+      timestampMs: new Date(c.acquisition_timestamp).getTime(),
+      durationSeconds: Number(c.duration_seconds) || ACQUISITION_DURATION_SECONDS,
+    });
+    commitmentsBySat.set(satId, list);
+  }
+
+  let reprogrammedCount = 0;
+
+  for (const row of pendingRes.rows) {
+    const origId = String(row.id);
+    clearReservationTimer(origId);
+
+    const userId = String(row.user_id || DEFAULT_DEMO_USER_ID);
+    const durationSeconds = Number(row.duration_seconds) || ACQUISITION_DURATION_SECONDS;
+    const centerLng = Number(row.center_longitude_deg);
+    const centerLat = Number(row.center_latitude_deg);
+    const widthM = Number(row.width_m);
+    const heightM = Number(row.height_m);
+
+    const pseudoReq: QueuedRequestRow = {
+      id: origId,
+      user_id: userId,
+      center_longitude_deg: centerLng,
+      center_latitude_deg: centerLat,
+      width_m: widthM,
+      height_m: heightM,
+      time_mode: 'ASAP',
+      requested_timestamp: null,
+      confirmation_mode: 'auto',
+      reprogrammed_from_id: origId,
+      created_at: new Date().toISOString(),
+      status: 'Evaluating',
+    };
+
+    const match = evaluateRequestFeasibility(pseudoReq, activeSatellites, commitmentsBySat);
+    const feasibleIso = new Date(match.feasibleTimeMs).toISOString();
+    const newAcqId = crypto.randomUUID();
+
+    await pool.query(
+      `INSERT INTO acquisition_plan (
+         id,
+         satellite_id,
+         user_id,
+         acquisition_timestamp,
+         duration_seconds,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         status,
+         acquired_image,
+         reprogrammed_from_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        newAcqId,
+        match.satelliteId,
+        userId,
+        feasibleIso,
+        durationSeconds,
+        centerLng,
+        centerLat,
+        widthM,
+        heightM,
+        'Pending',
+        null,
+        origId,
+      ]
+    );
+
+    await pool.query(
+      `UPDATE acquisition_plan SET status = 'Reprogrammed' WHERE id = $1`,
+      [origId]
+    );
+
+    const satCommitments = commitmentsBySat.get(match.satelliteId) || [];
+    satCommitments.push({
+      id: newAcqId,
+      satellite_id: match.satelliteId,
+      timestampMs: match.feasibleTimeMs,
+      durationSeconds,
+    });
+    commitmentsBySat.set(match.satelliteId, satCommitments);
+
+    reprogrammedCount++;
+  }
+
+  if (reprogrammedCount > 0) {
+    startAcquisitionPlanExecutor();
+  }
+
+  return reprogrammedCount;
+}
+
+/**
+ * When a satellite is reactivated (status -> 'active'), checks all Pending acquisitions in the plan
+ * across other satellites to see if the reactivated satellite can perform any of them AT AN EARLIER TIME.
+ * If so, creates the new confirmed ('Pending') acquisition items on the reactivated satellite and
+ * removes the original items from the plan.
+ * Returns the number of reassigned acquisition items.
+ */
+export async function reassignEarlierAcquisitionsToReactivatedSatellite(
+  reactivatedSatelliteId: string
+): Promise<number> {
+  const pool = getPool();
+
+  // 1. Load the reactivated satellite's orbital parameters
+  const satRes = await pool.query(
+    `SELECT
+       id,
+       orbit_altitude_km,
+       orbit_orientation_deg,
+       reference_latitude_deg,
+       reference_direction,
+       reference_timestamp
+     FROM satellite_fleet
+     WHERE id = $1`,
+    [reactivatedSatelliteId]
+  );
+
+  if (satRes.rows.length === 0) {
+    return 0;
+  }
+
+  const r = satRes.rows[0];
+  const sat: SatelliteRow = {
+    id: String(r.id),
+    orbit_altitude_km: Number(r.orbit_altitude_km),
+    orbit_orientation_deg: Number(r.orbit_orientation_deg),
+    reference_latitude_deg: Number(r.reference_latitude_deg),
+    reference_direction: Number(r.reference_direction) as 1 | -1,
+    reference_timestamp:
+      r.reference_timestamp instanceof Date
+        ? r.reference_timestamp.toISOString()
+        : String(r.reference_timestamp),
+  };
+
+  // 2. Load existing active commitments on this satellite and all candidate Pending acquisitions on other satellites
+  const [ownCommitmentsRes, candidatesRes] = await Promise.all([
+    pool.query(
+      `SELECT id, satellite_id, acquisition_timestamp, duration_seconds
+       FROM acquisition_plan
+       WHERE satellite_id = $1
+         AND status IN ('Pending', 'Acquiring', 'Reserved')`,
+      [reactivatedSatelliteId]
+    ),
+    pool.query(
+      `SELECT
+         id,
+         satellite_id,
+         user_id,
+         acquisition_timestamp,
+         duration_seconds,
+         center_longitude_deg,
+         center_latitude_deg,
+         width_m,
+         height_m,
+         reprogrammed_from_id
+       FROM acquisition_plan
+       WHERE status = 'Pending'
+         AND satellite_id <> $1
+       ORDER BY acquisition_timestamp ASC`,
+      [reactivatedSatelliteId]
+    ),
+  ]);
+
+  const commitmentsBySat = new Map<string, ExistingCommitment[]>();
+  const ownCommitments: ExistingCommitment[] = ownCommitmentsRes.rows.map((c) => ({
+    id: String(c.id),
+    satellite_id: reactivatedSatelliteId,
+    timestampMs: new Date(c.acquisition_timestamp).getTime(),
+    durationSeconds: Number(c.duration_seconds) || ACQUISITION_DURATION_SECONDS,
+  }));
+  commitmentsBySat.set(reactivatedSatelliteId, ownCommitments);
+
+  const nowMs = Date.now();
+  const minFutureMs = nowMs + 15_000;
+  const stepMs = 5_000;
+  let reassignedCount = 0;
+
+  for (const cand of candidatesRes.rows) {
+    const candId = String(cand.id);
+    const currentPlannedMs = new Date(cand.acquisition_timestamp).getTime();
+    const durationSeconds = Number(cand.duration_seconds) || ACQUISITION_DURATION_SECONDS;
+    const targetLng = Number(cand.center_longitude_deg);
+    const targetLat = Number(cand.center_latitude_deg);
+    const widthM = Number(cand.width_m);
+    const heightM = Number(cand.height_m);
+    const userId = String(cand.user_id || DEFAULT_DEMO_USER_ID);
+    const reprogrammedFromId = cand.reprogrammed_from_id
+      ? String(cand.reprogrammed_from_id)
+      : null;
+
+    // Must be able to capture strictly earlier (at least 5s earlier than currentPlannedMs)
+    const latestAllowedMs = currentPlannedMs - 5_000;
+    if (latestAllowedMs < minFutureMs) {
+      continue;
+    }
+
+    let earliestMatchTimeMs: number | null = null;
+
+    for (let t = minFutureMs; t <= latestAllowedMs; t += stepMs) {
+      const cov = checkFootprintCoverage(sat, t, targetLat, targetLng, widthM, heightM);
+      if (!cov.covered) continue;
+      if (hasTimeWindowConflict(sat.id, t, durationSeconds, commitmentsBySat)) {
+        continue;
+      }
+
+      // Refine within the pass up to latestAllowedMs to minimize off-nadir distance
+      let bestTimeMs = t;
+      let bestOffNadir = cov.offNadirMeters;
+      const fineLimitMs = Math.min(t + 25_000, latestAllowedMs);
+      for (let fineT = t; fineT <= fineLimitMs; fineT += 1_000) {
+        const fineCov = checkFootprintCoverage(sat, fineT, targetLat, targetLng, widthM, heightM);
+        if (
+          fineCov.covered &&
+          !hasTimeWindowConflict(sat.id, fineT, durationSeconds, commitmentsBySat) &&
+          fineCov.offNadirMeters < bestOffNadir
+        ) {
+          bestOffNadir = fineCov.offNadirMeters;
+          bestTimeMs = fineT;
+        }
+      }
+
+      earliestMatchTimeMs = bestTimeMs;
+      break;
+    }
+
+    if (earliestMatchTimeMs !== null && earliestMatchTimeMs < currentPlannedMs) {
+      const newAcqId = crypto.randomUUID();
+      const newIso = new Date(earliestMatchTimeMs).toISOString();
+
+      await pool.query(
+        `INSERT INTO acquisition_plan (
+           id,
+           satellite_id,
+           user_id,
+           acquisition_timestamp,
+           duration_seconds,
+           center_longitude_deg,
+           center_latitude_deg,
+           width_m,
+           height_m,
+           status,
+           acquired_image,
+           reprogrammed_from_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          newAcqId,
+          reactivatedSatelliteId,
+          userId,
+          newIso,
+          durationSeconds,
+          targetLng,
+          targetLat,
+          widthM,
+          heightM,
+          'Pending',
+          null,
+          reprogrammedFromId,
+        ]
+      );
+
+      // Remove the original item from the plan
+      await pool.query(`DELETE FROM acquisition_plan WHERE id = $1`, [candId]);
+
+      // If this item had been reprogrammed from an earlier row on this same reactivated satellite,
+      // also clean up that old 'Reprogrammed' row on this satellite so it is not duplicated
+      if (reprogrammedFromId) {
+        await pool.query(
+          `DELETE FROM acquisition_plan
+           WHERE id = $1 AND satellite_id = $2 AND status = 'Reprogrammed'`,
+          [reprogrammedFromId, reactivatedSatelliteId]
+        );
+      }
+
+      ownCommitments.push({
+        id: newAcqId,
+        satellite_id: reactivatedSatelliteId,
+        timestampMs: earliestMatchTimeMs,
+        durationSeconds,
+      });
+      commitmentsBySat.set(reactivatedSatelliteId, ownCommitments);
+
+      reassignedCount++;
+    }
+  }
+
+  if (reassignedCount > 0) {
+    startAcquisitionPlanExecutor();
+  }
+
+  return reassignedCount;
 }

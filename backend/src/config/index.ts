@@ -17,4 +17,5 @@ export const config = {
   acquisitionSubjectRequestEvaluated: 'acquisition.plan.request_evaluated',
   acquisitionSubjectCanceled: 'acquisition.plan.canceled',
   acquisitionSubjectQueueUpdated: 'acquisition.plan.queue_updated',
+  acquisitionSubjectSatelliteStatusUpdated: 'acquisition.plan.satellite_status_updated',
 };

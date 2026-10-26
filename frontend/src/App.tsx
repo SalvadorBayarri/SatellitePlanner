@@ -16,9 +16,12 @@ import {
   Crosshair,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   ClipboardList,
   ListOrdered,
   Layers,
+  BarChart3,
+  LineChart,
   User as UserIcon,
   CheckCircle2,
   AlertCircle,
@@ -40,6 +43,7 @@ import {
   createGeoEvent,
   fetchHealth,
   fetchSatellites,
+  updateSatelliteStatus,
   fetchUsers,
   initializeAcquisitionPlan,
   fetchAcquisitionPlan,
@@ -84,7 +88,7 @@ const DraggablePanel: React.FC<DraggablePanelProps> = ({
     // Allow normal interaction with buttons, inputs, selects, or links inside the panel
     if (
       target.closest(
-        'button, input, select, textarea, a, label, .acq-plan-list-container, .acq-plan-list-item'
+        'button, input, select, textarea, a, label, .acq-plan-list-container, .acq-plan-list-item, .acq-timeline-container, .acq-timeline-dot, .acq-sat-row-label'
       )
     ) {
       return;
@@ -149,7 +153,32 @@ export function App() {
   const [acquisitionFocusKey, setAcquisitionFocusKey] = useState<number>(0);
   const [showImagePopup, setShowImagePopup] = useState<boolean>(false);
   const [showAcquisitionPlanWindow, setShowAcquisitionPlanWindow] = useState<boolean>(false);
+  const [planWindowMode, setPlanWindowMode] = useState<'list' | 'timeline'>('list');
+  const [timelineZoom, setTimelineZoom] = useState<number>(1);
+  const timelineStartAnchorRef = useRef<number | null>(null);
   const [planUserFilter, setPlanUserFilter] = useState<string>('ALL');
+
+  // Top bar dropdown & Stats windows state
+  const [openTopDropdown, setOpenTopDropdown] = useState<'image_requests' | 'stats' | null>(null);
+  const [showStatusStatsWindow, setShowStatusStatsWindow] = useState<boolean>(false);
+  const [showTimelineStatsWindow, setShowTimelineStatsWindow] = useState<boolean>(false);
+  const [statsHistory, setStatsHistory] = useState<
+    Array<{
+      timeMs: number;
+      completed: number;
+      failed: number;
+      reprogrammed: number;
+      failedOrReprogrammed: number;
+    }>
+  >(() => [
+    {
+      timeMs: Date.now(),
+      completed: 0,
+      failed: 0,
+      reprogrammed: 0,
+      failedOrReprogrammed: 0,
+    },
+  ]);
 
   // Acquisition Requests Queue Window state
   const [requestsQueue, setRequestsQueue] = useState<AcquisitionRequestQueueItem[]>([]);
@@ -187,6 +216,15 @@ export function App() {
   const [selectedEvent, setSelectedEvent] = useState<GeoEvent | null>(null);
   const [selectedSatelliteId, setSelectedSatelliteId] = useState<string | null>(null);
   const [trackSelectedSatellite, setTrackSelectedSatellite] = useState<boolean>(false);
+  const [confirmSatStatusTarget, setConfirmSatStatusTarget] = useState<SatellitePosition | null>(
+    null
+  );
+  const [updatingSatStatus, setUpdatingSatStatus] = useState<boolean>(false);
+  const [satStatusToast, setSatStatusToast] = useState<{
+    message: string;
+    type: 'disabled' | 'restored';
+  } | null>(null);
+  const satStatusToastTimerRef = useRef<number | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -244,6 +282,66 @@ export function App() {
     }, 100);
     return () => window.clearInterval(timer);
   }, [getSimulatedTimeMs]);
+
+  // Close top-bar dropdown menus when clicking outside
+  useEffect(() => {
+    if (!openTopDropdown) return;
+    const handleOutsideClick = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target || !target.closest('.hud-dropdown-wrapper')) {
+        setOpenTopDropdown(null);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutsideClick);
+    return () => document.removeEventListener('pointerdown', handleOutsideClick);
+  }, [openTopDropdown]);
+
+  // Record live time-series history of Completed vs Failed/Reprogrammed acquisitions
+  const recordStatsSnapshot = useCallback((planRows: AcquisitionPlanRow[]) => {
+    let completed = 0;
+    let failed = 0;
+    let reprogrammed = 0;
+    for (const r of planRows) {
+      const st = (r.status || '').toLowerCase();
+      if (st === 'completed') completed++;
+      else if (st === 'failed') failed++;
+      else if (st === 'reprogrammed') reprogrammed++;
+    }
+    const failedOrReprogrammed = failed + reprogrammed;
+    const now = Date.now();
+
+    setStatsHistory((prev) => {
+      if (prev.length === 0) {
+        return [{ timeMs: now, completed, failed, reprogrammed, failedOrReprogrammed }];
+      }
+      const last = prev[prev.length - 1];
+      // If counts changed or at least 2 seconds elapsed, append a new point (keep up to 180 points)
+      if (
+        last.completed !== completed ||
+        last.failed !== failed ||
+        last.reprogrammed !== reprogrammed ||
+        now - last.timeMs >= 2000
+      ) {
+        const next = [
+          ...prev,
+          { timeMs: now, completed, failed, reprogrammed, failedOrReprogrammed },
+        ];
+        return next.length > 180 ? next.slice(next.length - 180) : next;
+      }
+      return prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    recordStatsSnapshot(acquisitionPlan);
+  }, [acquisitionPlan, recordStatsSnapshot]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      recordStatsSnapshot(acquisitionPlan);
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [acquisitionPlan, recordStatsSnapshot]);
 
   // New event form state
   const [title, setTitle] = useState<string>('');
@@ -331,6 +429,38 @@ export function App() {
       },
       (updatedQueue) => {
         setRequestsQueue(updatedQueue);
+      },
+      (updatedSat) => {
+        setSatellites((prev) =>
+          prev.map((s) => (s.id === updatedSat.id ? { ...s, status: updatedSat.status } : s))
+        );
+        // Refresh the full acquisition plan so reprogrammed or reassigned items are reflected immediately
+        void fetchAcquisitionPlan()
+          .then((res) => setAcquisitionPlan(res.data))
+          .catch((err) => console.error('Failed to refresh acquisition plan after satellite status change:', err));
+
+        const shortCode = updatedSat.id.slice(-4).toUpperCase();
+        const isNowDisabled = updatedSat.status === 'disabled';
+        const reprogrammedCount = updatedSat.reprogrammed_count ?? 0;
+        const reassignedCount = updatedSat.reassigned_count ?? 0;
+
+        if (satStatusToastTimerRef.current) {
+          window.clearTimeout(satStatusToastTimerRef.current);
+        }
+        setSatStatusToast({
+          message: isNowDisabled
+            ? `Satellite SAT-${shortCode} has been deactivated. ${reprogrammedCount} acquisition ${
+                reprogrammedCount === 1 ? 'item has' : 'items have'
+              } been reprogrammed.`
+            : `Satellite SAT-${shortCode} restored. ${reassignedCount} acquisition ${
+                reassignedCount === 1 ? 'item has' : 'items have'
+              } been reassigned to this satellite.`,
+          type: isNowDisabled ? 'disabled' : 'restored',
+        });
+        satStatusToastTimerRef.current = window.setTimeout(() => {
+          setSatStatusToast(null);
+          satStatusToastTimerRef.current = null;
+        }, 5500);
       }
     );
     return () => {
@@ -509,6 +639,22 @@ export function App() {
     setShowRequestImageDialog(true);
   }, []);
 
+  const handleConfirmSatelliteStatusChange = async () => {
+    if (!confirmSatStatusTarget || updatingSatStatus) return;
+    const currentStatus = (confirmSatStatusTarget.status || 'active').toLowerCase();
+    const nextStatus: 'active' | 'disabled' =
+      currentStatus === 'disabled' ? 'active' : 'disabled';
+    setUpdatingSatStatus(true);
+    try {
+      await updateSatelliteStatus(confirmSatStatusTarget.id, nextStatus);
+      setConfirmSatStatusTarget(null);
+    } catch (err) {
+      console.error('Failed to update satellite status:', err);
+    } finally {
+      setUpdatingSatStatus(false);
+    }
+  };
+
   const handlePublishEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
@@ -673,6 +819,44 @@ export function App() {
     });
   }, [sortedAcquisitionPlan, planUserFilter, users, getUserName]);
 
+  // Stable timeline bounds for the Full Timeline mode of the Global Acquisition Plan window.
+  // Anchors startMs so adding later acquisitions extends endMs (and horizontal scroll width)
+  // without altering the horizontal time scale (zoom factor).
+  const timelineBounds = React.useMemo(() => {
+    const nowSnap = Date.now();
+    const sourcePlan =
+      filteredAcquisitionPlan.length > 0 ? filteredAcquisitionPlan : sortedAcquisitionPlan;
+
+    if (sourcePlan.length === 0) {
+      const startMs =
+        timelineStartAnchorRef.current ?? Math.floor((nowSnap - 30_000) / 60_000) * 60_000;
+      const endMs = Math.ceil((startMs + 31 * 60_000) / 60_000) * 60_000;
+      return { startMs, endMs, spanMs: Math.max(60_000, endMs - startMs) };
+    }
+
+    let minAcqMs = Infinity;
+    let maxAcqMs = -Infinity;
+    for (const row of sourcePlan) {
+      const t = new Date(row.acquisition_timestamp).getTime();
+      if (t < minAcqMs) minAcqMs = t;
+      if (t > maxAcqMs) maxAcqMs = t;
+    }
+
+    const candidateStartMs = Math.floor((Math.min(minAcqMs, nowSnap) - 30_000) / 60_000) * 60_000;
+    if (
+      timelineStartAnchorRef.current === null ||
+      candidateStartMs < timelineStartAnchorRef.current ||
+      minAcqMs - timelineStartAnchorRef.current > 60 * 60_000
+    ) {
+      timelineStartAnchorRef.current = candidateStartMs;
+    }
+
+    const startMs = timelineStartAnchorRef.current;
+    const rawEnd = Math.max(maxAcqMs + 60_000, startMs + 31 * 60_000);
+    const endMs = Math.ceil(rawEnd / 60_000) * 60_000;
+    return { startMs, endMs, spanMs: Math.max(60_000, endMs - startMs) };
+  }, [filteredAcquisitionPlan, sortedAcquisitionPlan]);
+
   // Pending acquisition requests sorted chronologically by submission time (created_at)
   const sortedRequestsQueue = React.useMemo(() => {
     return [...requestsQueue].sort((a, b) => {
@@ -745,7 +929,13 @@ export function App() {
         satellites={satellites}
         selectedEvent={showGeoEvents ? selectedEvent : null}
         selectedSatelliteId={selectedSatelliteId}
-        selectedAcquisition={activeSatellite ? activeAcquisitionRow : null}
+        selectedAcquisition={
+          activeSatellite &&
+          activeAcquisitionRow &&
+          activeAcquisitionRow.status.toLowerCase() !== 'reprogrammed'
+            ? activeAcquisitionRow
+            : null
+        }
         acquisitionFocusKey={acquisitionFocusKey}
         trackSelectedSatellite={trackSelectedSatellite}
         onSelectEvent={(ev) => {
@@ -813,54 +1003,144 @@ export function App() {
             <Activity size={15} />
           </div>
 
-          <button
-            type="button"
-            className={`hud-btn request-image-btn ${showRequestImageDialog ? 'active' : ''}`}
-            onClick={() => {
-              const nextOpen = !showRequestImageDialog;
-              setShowRequestImageDialog(nextOpen);
-              setReprogramSourceAcquisitionId(null);
-              if (!nextOpen) {
-                setIsPickingGlobeLocation(false);
+          {/* Image Requests Dropdown Button (Request Image, Batch Requests, Requests Queue) */}
+          <div className="hud-dropdown-wrapper">
+            <button
+              type="button"
+              className={`hud-btn image-requests-dropdown-btn ${
+                openTopDropdown === 'image_requests' ||
+                showRequestImageDialog ||
+                showBatchRequestsDialog ||
+                showRequestsQueueWindow
+                  ? 'active'
+                  : ''
+              }`}
+              onClick={() =>
+                setOpenTopDropdown((prev) =>
+                  prev === 'image_requests' ? null : 'image_requests'
+                )
               }
-            }}
-            title="Open dialog to request a new satellite image capture"
-          >
-            <Camera size={15} />
-            <span>Request Image</span>
-          </button>
+              title="Image Requests menu (Request Image, Batch Requests, Requests Queue)"
+            >
+              <Camera size={15} />
+              <span>Image Requests</span>
+              {requestsQueue.length > 0 && (
+                <span className="queue-count-badge">{requestsQueue.length}</span>
+              )}
+              <ChevronDown size={14} className="dropdown-caret" />
+            </button>
 
-          <button
-            type="button"
-            className={`hud-btn batch-requests-btn ${showBatchRequestsDialog ? 'active' : ''}`}
-            onClick={() => {
-              setShowBatchRequestsDialog((prev) => !prev);
-              setBatchSubmitError(null);
-            }}
-            title="Open dialog to send a batch of random auto-confirmed ASAP acquisition requests"
-          >
-            <Layers size={15} />
-            <span>Batch Requests</span>
-          </button>
+            {openTopDropdown === 'image_requests' && (
+              <div className="hud-dropdown-menu glass-card" role="menu">
+                <button
+                  type="button"
+                  className={`hud-dropdown-item ${showRequestImageDialog ? 'active' : ''}`}
+                  role="menuitem"
+                  onClick={() => {
+                    const nextOpen = !showRequestImageDialog;
+                    setShowRequestImageDialog(nextOpen);
+                    setReprogramSourceAcquisitionId(null);
+                    if (!nextOpen) {
+                      setIsPickingGlobeLocation(false);
+                    }
+                    setOpenTopDropdown(null);
+                  }}
+                >
+                  <Camera size={14} className="dropdown-item-icon emerald" />
+                  <span>Request Image</span>
+                  {showRequestImageDialog && <span className="dropdown-open-pill">Open</span>}
+                </button>
 
-          <button
-            type="button"
-            className={`hud-btn see-queue-btn ${showRequestsQueueWindow ? 'active' : ''}`}
-            onClick={() => {
-              const nextOpen = !showRequestsQueueWindow;
-              setShowRequestsQueueWindow(nextOpen);
-              if (nextOpen) {
-                void handleRefreshRequestsQueue();
-              }
-            }}
-            title="Open floating Acquisition Requests Queue panel filterable by owner"
-          >
-            <ListOrdered size={15} />
-            <span>Requests Queue</span>
-            {requestsQueue.length > 0 && (
-              <span className="queue-count-badge">{requestsQueue.length}</span>
+                <button
+                  type="button"
+                  className={`hud-dropdown-item ${showBatchRequestsDialog ? 'active' : ''}`}
+                  role="menuitem"
+                  onClick={() => {
+                    setShowBatchRequestsDialog((prev) => !prev);
+                    setBatchSubmitError(null);
+                    setOpenTopDropdown(null);
+                  }}
+                >
+                  <Layers size={14} className="dropdown-item-icon sky" />
+                  <span>Batch Requests</span>
+                  {showBatchRequestsDialog && <span className="dropdown-open-pill">Open</span>}
+                </button>
+
+                <button
+                  type="button"
+                  className={`hud-dropdown-item ${showRequestsQueueWindow ? 'active' : ''}`}
+                  role="menuitem"
+                  onClick={() => {
+                    const nextOpen = !showRequestsQueueWindow;
+                    setShowRequestsQueueWindow(nextOpen);
+                    if (nextOpen) {
+                      void handleRefreshRequestsQueue();
+                    }
+                    setOpenTopDropdown(null);
+                  }}
+                >
+                  <ListOrdered size={14} className="dropdown-item-icon amber" />
+                  <span>Requests Queue</span>
+                  {requestsQueue.length > 0 && (
+                    <span className="queue-count-badge">{requestsQueue.length}</span>
+                  )}
+                  {showRequestsQueueWindow && <span className="dropdown-open-pill">Open</span>}
+                </button>
+              </div>
             )}
-          </button>
+          </div>
+
+          {/* Stats Dropdown Button (Status Vertical Bar Chart & Completed vs Failed/Reprogrammed Line Chart) */}
+          <div className="hud-dropdown-wrapper">
+            <button
+              type="button"
+              className={`hud-btn stats-dropdown-btn ${
+                openTopDropdown === 'stats' || showStatusStatsWindow || showTimelineStatsWindow
+                  ? 'active'
+                  : ''
+              }`}
+              onClick={() =>
+                setOpenTopDropdown((prev) => (prev === 'stats' ? null : 'stats'))
+              }
+              title="Open Acquisition Plan Statistics charts"
+            >
+              <BarChart3 size={15} />
+              <span>Stats</span>
+              <ChevronDown size={14} className="dropdown-caret" />
+            </button>
+
+            {openTopDropdown === 'stats' && (
+              <div className="hud-dropdown-menu glass-card" role="menu">
+                <button
+                  type="button"
+                  className={`hud-dropdown-item ${showStatusStatsWindow ? 'active' : ''}`}
+                  role="menuitem"
+                  onClick={() => {
+                    setShowStatusStatsWindow((prev) => !prev);
+                    setOpenTopDropdown(null);
+                  }}
+                >
+                  <BarChart3 size={14} className="dropdown-item-icon cyan" />
+                  <span>Status</span>
+                  {showStatusStatsWindow && <span className="dropdown-open-pill">Open</span>}
+                </button>
+
+                <button
+                  type="button"
+                  className={`hud-dropdown-item ${showTimelineStatsWindow ? 'active' : ''}`}
+                  role="menuitem"
+                  onClick={() => {
+                    setShowTimelineStatsWindow((prev) => !prev);
+                    setOpenTopDropdown(null);
+                  }}
+                >
+                  <LineChart size={14} className="dropdown-item-icon emerald" />
+                  <span>Completed vs Failed / Reprogrammed</span>
+                  {showTimelineStatsWindow && <span className="dropdown-open-pill">Open</span>}
+                </button>
+              </div>
+            )}
+          </div>
 
           <button
             type="button"
@@ -1367,6 +1647,113 @@ export function App() {
         </div>
       )}
 
+      {/* Temporary Satellite Status Change Toast Banner */}
+      {satStatusToast && (
+        <div
+          className={`sat-status-toast glass-card ${satStatusToast.type}`}
+          role="status"
+          aria-live="polite"
+        >
+          {satStatusToast.type === 'disabled' ? (
+            <AlertCircle size={15} className="sat-toast-icon disabled" />
+          ) : (
+            <CheckCircle2 size={15} className="sat-toast-icon restored" />
+          )}
+          <span>{satStatusToast.message}</span>
+        </div>
+      )}
+
+      {/* Draggable Satellite Status Change Confirmation Dialog */}
+      {confirmSatStatusTarget && (
+        <DraggablePanel
+          className="sat-status-confirm-popup glass-card"
+          initialPosition={{
+            x: Math.max(24, Math.round(window.innerWidth / 2 - 190)),
+            y: 180,
+          }}
+          ariaLabel="Satellite Status Confirmation Dialog"
+        >
+          {(() => {
+            const isCurrentlyDisabled =
+              (confirmSatStatusTarget.status || 'active').toLowerCase() === 'disabled';
+            const shortCode = confirmSatStatusTarget.id.slice(-4).toUpperCase();
+            return (
+              <>
+                <div className="tooltip-header drag-handle-header">
+                  <div className="card-header-left">
+                    {isCurrentlyDisabled ? (
+                      <CheckCircle2 size={16} className="eval-icon-success" />
+                    ) : (
+                      <AlertCircle size={16} className="eval-icon-alt" />
+                    )}
+                    <span className="tooltip-tag">
+                      {isCurrentlyDisabled
+                        ? 'RESTORE SATELLITE CONFIRMATION'
+                        : 'DISABLE SATELLITE CONFIRMATION'}
+                    </span>
+                  </div>
+                  <div className="header-actions">
+                    <GripHorizontal size={15} className="drag-grip-icon" />
+                    <button
+                      type="button"
+                      className="close-btn"
+                      onClick={() => setConfirmSatStatusTarget(null)}
+                      aria-label="Close satellite status confirmation"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  className={`eval-outcome-banner ${
+                    isCurrentlyDisabled ? 'fulfilled' : 'alternative'
+                  }`}
+                >
+                  <strong>
+                    {isCurrentlyDisabled
+                      ? `Restore SAT-${shortCode} to Active Status?`
+                      : `Disable SAT-${shortCode}?`}
+                  </strong>
+                  <span>
+                    {isCurrentlyDisabled
+                      ? `Confirming will set SAT-${shortCode} back to "active", reassign any acquisitions it can perform at an earlier time, and restore its operational color.`
+                      : `Confirming will set SAT-${shortCode} to "disabled", automatically reprogram its pending acquisitions in ASAP mode, and mark it in gray across all views.`}
+                  </span>
+                </div>
+
+                <div className="eval-actions-row">
+                  <button
+                    type="button"
+                    className="eval-btn confirm"
+                    disabled={updatingSatStatus}
+                    onClick={handleConfirmSatelliteStatusChange}
+                  >
+                    <CheckCircle2 size={14} />
+                    <span>
+                      {updatingSatStatus
+                        ? 'Updating...'
+                        : isCurrentlyDisabled
+                        ? 'Confirm Restore'
+                        : 'Confirm Disable'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="eval-btn cancel"
+                    disabled={updatingSatStatus}
+                    onClick={() => setConfirmSatStatusTarget(null)}
+                  >
+                    <X size={14} />
+                    <span>Cancel</span>
+                  </button>
+                </div>
+              </>
+            );
+          })()}
+        </DraggablePanel>
+      )}
+
       {/* Draggable Reservation Auto-Canceled Notification Dialog */}
       {cancelNotification && (
         <DraggablePanel
@@ -1520,7 +1907,9 @@ export function App() {
       {/* Draggable Floating Acquisition Plan Window */}
       {showAcquisitionPlanWindow && (
         <DraggablePanel
-          className="acquisition-plan-window glass-card"
+          className={`acquisition-plan-window glass-card ${
+            planWindowMode === 'timeline' ? 'timeline-mode' : ''
+          }`}
           initialPosition={{ x: 24, y: 96 }}
           ariaLabel="Acquisition Plan Window"
         >
@@ -1532,6 +1921,24 @@ export function App() {
               </span>
             </div>
             <div className="header-actions">
+              <div className="plan-mode-toggle" role="group" aria-label="Acquisition plan view mode">
+                <button
+                  type="button"
+                  className={`plan-mode-btn ${planWindowMode === 'list' ? 'active' : ''}`}
+                  onClick={() => setPlanWindowMode('list')}
+                  title="Narrow List Mode"
+                >
+                  List
+                </button>
+                <button
+                  type="button"
+                  className={`plan-mode-btn ${planWindowMode === 'timeline' ? 'active' : ''}`}
+                  onClick={() => setPlanWindowMode('timeline')}
+                  title="Full Timeline Mode"
+                >
+                  Timeline
+                </button>
+              </div>
               <GripHorizontal size={15} className="drag-grip-icon" />
               <button
                 type="button"
@@ -1567,62 +1974,613 @@ export function App() {
                 );
               })}
             </select>
-          </div>
-
-          <div className="acq-plan-list-container">
-            {filteredAcquisitionPlan.length === 0 ? (
-              <div className="acq-empty">No acquisition plan rows match the selected user filter.</div>
-            ) : (
-              filteredAcquisitionPlan.map((row, idx) => {
-                const isSelected = activeSatellite?.id === row.satellite_id && activeAcquisitionRow?.id === row.id;
-                const satCfg = satellites.find((s) => s.id === row.satellite_id);
-                const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
-                const shortSat = row.satellite_id.slice(-4).toUpperCase();
-                const utcStr = formatUtcTimestamp(new Date(row.acquisition_timestamp).getTime());
-                const sizeKm = (row.width_m / 1000).toFixed(1);
-                const userName = getUserName(row.user_id);
-
-                return (
-                  <div
-                    key={row.id}
-                    className={`acq-plan-list-item ${isSelected ? 'selected' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => selectAcquisitionAndOpenPanel(row)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        selectAcquisitionAndOpenPanel(row);
-                      }
-                    }}
+            {planWindowMode === 'timeline' && (
+              <>
+                <div
+                  className="timeline-zoom-control"
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY < 0 ? 0.15 : -0.15;
+                    setTimelineZoom((prev) =>
+                      Math.max(0.25, Math.min(4, Number((prev + delta).toFixed(2))))
+                    );
+                  }}
+                  title="Adjust horizontal time scale (slider or mouse wheel)"
+                >
+                  <span className="timeline-zoom-label">Time Scale:</span>
+                  <button
+                    type="button"
+                    className="timeline-zoom-step-btn"
+                    onClick={() =>
+                      setTimelineZoom((prev) =>
+                        Math.max(0.25, Number((prev - 0.25).toFixed(2)))
+                      )
+                    }
+                    title="Zoom out timeline"
+                    aria-label="Zoom out timeline"
                   >
-                    <div className="acq-list-item-top">
-                      <div className="acq-list-sat-group">
-                        <span className="acq-list-index">#{idx + 1}</span>
-                        <span
-                          className="acq-list-sat-dot"
-                          style={{ backgroundColor: satColor, boxShadow: `0 0 8px ${satColor}` }}
-                        />
-                        <span className="acq-list-sat-code">SAT-{shortSat}</span>
-                        <span className="acq-list-user-pill">{userName}</span>
-                      </div>
-                      <span className={`acq-status-badge ${row.status.toLowerCase()}`}>
-                        {row.status}
-                      </span>
-                    </div>
-                    <div className="acq-list-item-bottom">
-                      <span className="acq-list-time">{utcStr}</span>
-                      <span className="acq-list-coords">
-                        {sizeKm}×{sizeKm} km • ({row.center_latitude_deg.toFixed(2)}°,{' '}
-                        {row.center_longitude_deg.toFixed(2)}°)
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
+                    −
+                  </button>
+                  <input
+                    type="range"
+                    className="timeline-zoom-slider"
+                    min={0.25}
+                    max={4}
+                    step={0.05}
+                    value={timelineZoom}
+                    onChange={(e) => setTimelineZoom( parseFloat(e.target.value) )}
+                    aria-label="Timeline horizontal zoom scale"
+                  />
+                  <button
+                    type="button"
+                    className="timeline-zoom-step-btn"
+                    onClick={() =>
+                      setTimelineZoom((prev) =>
+                        Math.min(4, Number((prev + 0.25).toFixed(2)))
+                      )
+                    }
+                    title="Zoom in timeline"
+                    aria-label="Zoom in timeline"
+                  >
+                    +
+                  </button>
+                  <span className="timeline-zoom-value">{ timelineZoom.toFixed(2) }x</span>
+                </div>
+                <div className="acq-timeline-legend">
+                  <span className="legend-item">
+                    <span className="legend-dot pending" /> Pending
+                  </span>
+                  <span className="legend-item">
+                    <span className="legend-dot reserved" /> Reserved
+                  </span>
+                  <span className="legend-item">
+                    <span className="legend-dot acquiring" /> Acquiring
+                  </span>
+                  <span className="legend-item">
+                    <span className="legend-dot completed" /> Completed
+                  </span>
+                  <span className="legend-item">
+                    <span className="legend-dot failed" /> Failed
+                  </span>
+                  <span className="legend-item">
+                    <span className="legend-dot reprogrammed" /> Reprogrammed
+                  </span>
+                </div>
+              </>
             )}
           </div>
+
+          {planWindowMode === 'list' ? (
+            <div className="acq-plan-list-container">
+              {filteredAcquisitionPlan.length === 0 ? (
+                <div className="acq-empty">No acquisition plan rows match the selected user filter.</div>
+              ) : (
+                filteredAcquisitionPlan.map((row, idx) => {
+                  const isSelected =
+                    activeSatellite?.id === row.satellite_id && activeAcquisitionRow?.id === row.id;
+                  const satCfg = satellites.find((s) => s.id === row.satellite_id);
+                  const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
+                  const shortSat = row.satellite_id.slice(-4).toUpperCase();
+                  const utcStr = formatUtcTimestamp(new Date(row.acquisition_timestamp).getTime());
+                  const sizeKm = (row.width_m / 1000).toFixed(1);
+                  const userName = getUserName(row.user_id);
+
+                  return (
+                    <div
+                      key={row.id}
+                      className={`acq-plan-list-item ${isSelected ? 'selected' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => selectAcquisitionAndOpenPanel(row)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          selectAcquisitionAndOpenPanel(row);
+                        }
+                      }}
+                    >
+                      <div className="acq-list-item-top">
+                        <div className="acq-list-sat-group">
+                          <span className="acq-list-index">#{idx + 1}</span>
+                          <span
+                            className="acq-list-sat-dot"
+                            style={{ backgroundColor: satColor, boxShadow: `0 0 8px ${satColor}` }}
+                          />
+                          <span className="acq-list-sat-code">SAT-{shortSat}</span>
+                          <span className="acq-list-user-pill">{userName}</span>
+                        </div>
+                        <span className={`acq-status-badge ${row.status.toLowerCase()}`}>
+                          {row.status}
+                        </span>
+                      </div>
+                      <div className="acq-list-item-bottom">
+                        <span className="acq-list-time">{utcStr}</span>
+                        <span className="acq-list-coords">
+                          {sizeKm}×{sizeKm} km • ({row.center_latitude_deg.toFixed(2)}°,{' '}
+                          {row.center_longitude_deg.toFixed(2)}°)
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          ) : (
+            (() => {
+              const { startMs, endMs, spanMs } = timelineBounds;
+              // Fixed pixel scale per minute governed solely by timelineZoom (does not shrink when endMs grows)
+              const basePxPerMinute = 24;
+              const pxPerMinute = basePxPerMinute * timelineZoom;
+              const pxPerMs = pxPerMinute / 60_000;
+              const trackWidthPx = Math.max(740, Math.ceil(spanMs * pxPerMs) + 28);
+
+              const nowX = Math.max(
+                0,
+                Math.min(trackWidthPx, (clockDisplay.utcMs - startMs) * pxPerMs)
+              );
+
+              const tickIntervalMs =
+                pxPerMinute >= 90
+                  ? 60_000
+                  : pxPerMinute >= 35
+                  ? 2 * 60_000
+                  : pxPerMinute >= 18
+                  ? 5 * 60_000
+                  : 10 * 60_000;
+
+              const firstTickMs = Math.ceil(startMs / tickIntervalMs) * tickIntervalMs;
+              const ticks: Array<{ xPx: number; hhmm: string }> = [];
+              for (let tMs = firstTickMs; tMs <= endMs; tMs += tickIntervalMs) {
+                const xPx = (tMs - startMs) * pxPerMs;
+                const hhmm = new Date(tMs).toISOString().slice(11, 16) + ' UTC';
+                ticks.push({ xPx, hhmm });
+              }
+
+              return (
+                <div className="acq-timeline-container">
+                  <div className="acq-timeline-scroll-area">
+                    <div
+                      className="acq-timeline-header"
+                      style={{ width: `${112 + trackWidthPx}px` }}
+                      onWheel={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+                        setTimelineZoom((prev) =>
+                          Math.max(0.25, Math.min(4, Number((prev + delta).toFixed(2))))
+                        );
+                      }}
+                      title="Spin mouse wheel here to zoom timeline horizontal scale"
+                    >
+                      <div className="acq-timeline-sat-col-header">SATELLITE</div>
+                      <div
+                        className="acq-timeline-scale-header"
+                        style={{ width: `${trackWidthPx}px` }}
+                      >
+                        {ticks.map((tk, idx) => (
+                          <span
+                            key={idx}
+                            className="acq-timeline-tick-label"
+                            style={{ left: `${tk.xPx}px` }}
+                          >
+                            {tk.hhmm}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div
+                      className="acq-timeline-rows"
+                      style={{ width: `${112 + trackWidthPx}px` }}
+                    >
+                      {/* Vertical current-time indicator crossing all satellite horizontal lines */}
+                      <div
+                        className="acq-timeline-track-overlay"
+                        style={{ width: `${trackWidthPx}px` }}
+                      >
+                        <div
+                          className="acq-timeline-now-line"
+                          style={{ left: `${nowX}px` }}
+                          title={`Current Time: ${formatUtcTimestamp(clockDisplay.utcMs)}`}
+                        >
+                          <span className="acq-timeline-now-badge">
+                            {new Date(clockDisplay.utcMs).toISOString().slice(11, 19)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {satellites.map((sat) => {
+                        const satColor = getSatelliteColor(sat);
+                        const isSatDisabled = sat.status === 'disabled';
+                        const isSatSelected = selectedSatelliteId === sat.id;
+                        const satRows = filteredAcquisitionPlan.filter(
+                          (r) => r.satellite_id === sat.id
+                        );
+                        const shortCode = sat.id.slice(-4).toUpperCase();
+
+                        return (
+                          <div
+                            key={sat.id}
+                            className={`acq-timeline-row ${isSatSelected ? 'selected-sat' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              className={`acq-sat-row-label ${isSatDisabled ? 'is-disabled-text' : ''}`}
+                              onClick={() => setSelectedSatelliteId(sat.id)}
+                              title={`${sat.id} (${isSatDisabled ? 'Disabled' : 'Active'}) — ${satRows.length} acquisition(s)`}
+                            >
+                              <span
+                                className="acq-list-sat-dot"
+                                style={{
+                                  backgroundColor: satColor,
+                                  boxShadow: isSatDisabled ? 'none' : `0 0 6px ${satColor}`,
+                                }}
+                              />
+                              <span className="acq-sat-row-code">SAT-{shortCode}</span>
+                            </button>
+
+                            <div
+                              className="acq-timeline-track"
+                              style={{ width: `${trackWidthPx}px` }}
+                            >
+                              <div
+                                className="acq-timeline-line"
+                                style={{
+                                  borderColor: isSatDisabled
+                                    ? 'rgba(148, 163, 184, 0.25)'
+                                    : 'rgba(148, 163, 184, 0.38)',
+                                }}
+                              />
+                              {satRows.map((row) => {
+                                const rowMs = new Date(row.acquisition_timestamp).getTime();
+                                const xPx = Math.max(
+                                  6,
+                                  Math.min(trackWidthPx - 6, (rowMs - startMs) * pxPerMs)
+                                );
+                                const statusClass = row.status.toLowerCase();
+                                const isDotSelected =
+                                  activeSatellite?.id === row.satellite_id &&
+                                  activeAcquisitionRow?.id === row.id;
+                                const utcStr = formatUtcTimestamp(rowMs);
+                                const userName = getUserName(row.user_id);
+
+                                return (
+                                  <button
+                                    key={row.id}
+                                    type="button"
+                                    className={`acq-timeline-dot ${statusClass} ${
+                                      isDotSelected ? 'selected' : ''
+                                    }`}
+                                    style={{ left: `${xPx}px` }}
+                                    onClick={() => selectAcquisitionAndOpenPanel(row)}
+                                    title={`SAT-${shortCode} • ${row.status} • ${utcStr} • User: ${userName} • (${row.center_latitude_deg.toFixed(2)}°, ${row.center_longitude_deg.toFixed(2)}°)`}
+                                    aria-label={`Select acquisition for SAT-${shortCode} at ${utcStr} (${row.status})`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()
+          )}
         </DraggablePanel>
       )}
+
+      {/* Draggable Floating Acquisition Status Stats (Vertical Bar Chart) Window */}
+      {showStatusStatsWindow &&
+        (() => {
+          const statusDefs = [
+            { key: 'pending', label: 'Pending', color: '#fbbf24' },
+            { key: 'reserved', label: 'Reserved', color: '#c084fc' },
+            { key: 'acquiring', label: 'Acquiring', color: '#38bdf8' },
+            { key: 'completed', label: 'Completed', color: '#34d399' },
+            { key: 'failed', label: 'Failed', color: '#fb7185' },
+            { key: 'reprogrammed', label: 'Reprogrammed', color: '#818cf8' },
+          ];
+
+          const counts = statusDefs.map((def) => {
+            const count = acquisitionPlan.filter(
+              (r) => (r.status || '').toLowerCase() === def.key
+            ).length;
+            return { ...def, count };
+          });
+
+          const maxCount = Math.max(1, ...counts.map((c) => c.count));
+
+          return (
+            <DraggablePanel
+              className="stats-window status-stats-window glass-card"
+              initialPosition={{ x: Math.max(40, Math.round(window.innerWidth * 0.28)), y: 110 }}
+              ariaLabel="Acquisition Plan Status Chart"
+            >
+              <div className="tooltip-header drag-handle-header">
+                <div className="card-header-left">
+                  <BarChart3 size={16} className="accent-cyan" />
+                  <span className="tooltip-tag">
+                    ACQUISITION STATUS DISTRIBUTION ({acquisitionPlan.length} TOTAL)
+                  </span>
+                </div>
+                <div className="header-actions">
+                  <GripHorizontal size={15} className="drag-grip-icon" />
+                  <button
+                    type="button"
+                    className="close-btn"
+                    onClick={() => setShowStatusStatsWindow(false)}
+                    aria-label="Close status stats window"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="status-bars-chart">
+                {counts.map((item) => {
+                  const heightPct = Math.round((item.count / maxCount) * 100);
+                  return (
+                    <div key={item.key} className="status-bar-col">
+                      <span className="status-bar-value" style={{ color: item.color }}>
+                        {item.count}
+                      </span>
+                      <div className="status-bar-track">
+                        <div
+                          className="status-bar-fill"
+                          style={{
+                            height: `${item.count > 0 ? Math.max(6, heightPct) : 2}%`,
+                            background: `linear-gradient(180deg, ${item.color} 0%, ${item.color}55 100%)`,
+                            boxShadow: item.count > 0 ? `0 0 12px ${item.color}66` : 'none',
+                            borderColor: item.color,
+                          }}
+                        />
+                      </div>
+                      <span className="status-bar-label">{item.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </DraggablePanel>
+          );
+        })()}
+
+      {/* Draggable Floating Completed vs Failed / Reprogrammed Over Time Line Chart Window */}
+      {showTimelineStatsWindow &&
+        (() => {
+          const pts =
+            statsHistory.length >= 2
+              ? statsHistory
+              : [
+                  {
+                    timeMs: (statsHistory[0]?.timeMs ?? Date.now()) - 10_000,
+                    completed: 0,
+                    failed: 0,
+                    reprogrammed: 0,
+                    failedOrReprogrammed: 0,
+                  },
+                  ...(statsHistory.length === 1
+                    ? statsHistory
+                    : [
+                        {
+                          timeMs: Date.now(),
+                          completed: 0,
+                          failed: 0,
+                          reprogrammed: 0,
+                          failedOrReprogrammed: 0,
+                        },
+                      ]),
+                ];
+
+          const minTime = pts[0].timeMs;
+          const maxTime = Math.max(minTime + 1000, pts[pts.length - 1].timeMs);
+          const maxVal = Math.max(
+            5,
+            ...pts.map((p) => Math.max(p.completed, p.failedOrReprogrammed))
+          );
+
+          const svgW = 500;
+          const svgH = 210;
+          const padL = 38;
+          const padR = 16;
+          const padT = 16;
+          const padB = 30;
+          const plotW = svgW - padL - padR;
+          const plotH = svgH - padT - padB;
+
+          const toX = (t: number) => padL + ((t - minTime) / (maxTime - minTime)) * plotW;
+          const toY = (v: number) => padT + plotH - (v / maxVal) * plotH;
+
+          const completedPoints = pts
+            .map((p) => `${toX(p.timeMs).toFixed(1)},${toY(p.completed).toFixed(1)}`)
+            .join(' ');
+          const failedReprogPoints = pts
+            .map((p) => `${toX(p.timeMs).toFixed(1)},${toY(p.failedOrReprogrammed).toFixed(1)}`)
+            .join(' ');
+          const failedOnlyPoints = pts
+            .map((p) => `${toX(p.timeMs).toFixed(1)},${toY(p.failed).toFixed(1)}`)
+            .join(' ');
+          const reprogrammedOnlyPoints = pts
+            .map((p) => `${toX(p.timeMs).toFixed(1)},${toY(p.reprogrammed).toFixed(1)}`)
+            .join(' ');
+
+          const yTicks = [
+            0,
+            Math.round(maxVal * 0.25),
+            Math.round(maxVal * 0.5),
+            Math.round(maxVal * 0.75),
+            maxVal,
+          ];
+          const uniqueYTicks = Array.from(new Set(yTicks));
+          const latest = pts[pts.length - 1];
+
+          return (
+            <DraggablePanel
+              className="stats-window timeline-stats-window glass-card"
+              initialPosition={{ x: Math.max(60, Math.round(window.innerWidth * 0.32)), y: 140 }}
+              ariaLabel="Completed vs Failed or Reprogrammed Over Time Line Chart"
+            >
+              <div className="tooltip-header drag-handle-header">
+                <div className="card-header-left">
+                  <LineChart size={16} className="accent-cyan" />
+                  <span className="tooltip-tag">
+                    COMPLETED VS FAILED / REPROGRAMMED OVER TIME
+                  </span>
+                </div>
+                <div className="header-actions">
+                  <GripHorizontal size={15} className="drag-grip-icon" />
+                  <button
+                    type="button"
+                    className="close-btn"
+                    onClick={() => setShowTimelineStatsWindow(false)}
+                    aria-label="Close timeline stats window"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="line-chart-legend-bar">
+                <span className="line-legend-item">
+                  <span className="line-legend-swatch completed" />
+                  Completed: <strong>{latest.completed}</strong>
+                </span>
+                <span className="line-legend-item">
+                  <span className="line-legend-swatch failed-reprog" />
+                  Failed + Reprogrammed: <strong>{latest.failedOrReprogrammed}</strong>
+                </span>
+                <span className="line-legend-item sub">
+                  <span className="line-legend-swatch failed-dashed" />
+                  Failed: <strong>{latest.failed}</strong>
+                </span>
+                <span className="line-legend-item sub">
+                  <span className="line-legend-swatch reprog-dashed" />
+                  Reprogrammed: <strong>{latest.reprogrammed}</strong>
+                </span>
+              </div>
+
+              <div className="line-chart-svg-wrapper">
+                <svg
+                  viewBox={`0 0 ${svgW} ${svgH}`}
+                  className="stats-line-svg"
+                  role="img"
+                  aria-label="Line chart of Completed versus Failed or Reprogrammed acquisitions over time"
+                >
+                  {/* Horizontal gridlines & Y-axis labels */}
+                  {uniqueYTicks.map((yv) => {
+                    const y = toY(yv);
+                    return (
+                      <g key={yv}>
+                        <line
+                          x1={padL}
+                          y1={y}
+                          x2={svgW - padR}
+                          y2={y}
+                          stroke="rgba(148, 163, 184, 0.18)"
+                          strokeDasharray="3 3"
+                        />
+                        <text
+                          x={padL - 8}
+                          y={y + 3}
+                          textAnchor="end"
+                          fill="#94a3b8"
+                          fontSize="10"
+                          fontFamily="JetBrains Mono, monospace"
+                        >
+                          {yv}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* X-axis baseline & start/mid/end timestamps */}
+                  <line
+                    x1={padL}
+                    y1={padT + plotH}
+                    x2={svgW - padR}
+                    y2={padT + plotH}
+                    stroke="rgba(148, 163, 184, 0.35)"
+                  />
+                  {[0, 0.5, 1].map((frac, idx) => {
+                    const t = minTime + (maxTime - minTime) * frac;
+                    const x = padL + plotW * frac;
+                    const label = new Date(t).toISOString().slice(11, 19) + ' UTC';
+                    return (
+                      <text
+                        key={idx}
+                        x={x}
+                        y={svgH - 8}
+                        textAnchor={idx === 0 ? 'start' : idx === 2 ? 'end' : 'middle'}
+                        fill="#94a3b8"
+                        fontSize="9.5"
+                        fontFamily="JetBrains Mono, monospace"
+                      >
+                        {label}
+                      </text>
+                    );
+                  })}
+
+                  {/* Dashed breakdown lines for Failed and Reprogrammed */}
+                  <polyline
+                    fill="none"
+                    stroke="#f43f5e"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 3"
+                    opacity="0.75"
+                    points={failedOnlyPoints}
+                  />
+                  <polyline
+                    fill="none"
+                    stroke="#818cf8"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 3"
+                    opacity="0.75"
+                    points={reprogrammedOnlyPoints}
+                  />
+
+                  {/* Primary Line: Failed + Reprogrammed */}
+                  <polyline
+                    fill="none"
+                    stroke="#fb7185"
+                    strokeWidth="2.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={failedReprogPoints}
+                  />
+
+                  {/* Primary Line: Completed */}
+                  <polyline
+                    fill="none"
+                    stroke="#34d399"
+                    strokeWidth="2.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={completedPoints}
+                  />
+
+                  {/* Latest point markers */}
+                  <circle
+                    cx={toX(latest.timeMs)}
+                    cy={toY(latest.failedOrReprogrammed)}
+                    r="4"
+                    fill="#fb7185"
+                    stroke="#ffffff"
+                    strokeWidth="1.2"
+                  />
+                  <circle
+                    cx={toX(latest.timeMs)}
+                    cy={toY(latest.completed)}
+                    r="4"
+                    fill="#34d399"
+                    stroke="#ffffff"
+                    strokeWidth="1.2"
+                  />
+                </svg>
+              </div>
+            </DraggablePanel>
+          );
+        })()}
 
       {/* Draggable Orbital Time & Simulation Speed Control Popup Panel */}
       <DraggablePanel
@@ -1832,24 +2790,47 @@ export function App() {
             </div>
           </div>
           <div className="sat-selector-row">
-            <span
-              className="sat-color-dot"
+            <button
+              type="button"
+              className={`sat-color-dot sat-status-btn ${
+                (activeSatellite.status || 'active') === 'disabled' ? 'is-disabled' : 'is-active'
+              }`}
               style={{
                 backgroundColor: activeSatellite.color,
                 boxShadow: `0 0 10px ${activeSatellite.color}`,
               }}
+              onClick={() => setConfirmSatStatusTarget(activeSatellite)}
+              title={
+                (activeSatellite.status || 'active') === 'disabled'
+                  ? 'Satellite is disabled — Click to restore satellite'
+                  : 'Satellite is active — Click to disable satellite'
+              }
+              aria-label={
+                (activeSatellite.status || 'active') === 'disabled'
+                  ? 'Restore satellite'
+                  : 'Disable satellite'
+              }
             />
             <select
               aria-label="Select Satellite ID"
-              className="sat-id-select"
+              className={`sat-id-select ${
+                (activeSatellite.status || 'active').toLowerCase() === 'disabled'
+                  ? 'is-disabled-text'
+                  : ''
+              }`}
               value={activeSatellite.id}
               onChange={(e) => setSelectedSatelliteId(e.target.value)}
               style={{ borderColor: `${activeSatellite.color}66` }}
             >
               {satellites.map((sat) => {
                 const shortCode = sat.id.slice(-4).toUpperCase();
+                const isDisabled = (sat.status || 'active').toLowerCase() === 'disabled';
                 return (
-                  <option key={sat.id} value={sat.id}>
+                  <option
+                    key={sat.id}
+                    value={sat.id}
+                    style={{ fontStyle: isDisabled ? 'italic' : 'normal' }}
+                  >
                     SAT-{shortCode} ({sat.orbit_orientation_deg.toFixed(0)}° EQ • {sat.orbit_altitude_km.toFixed(0)} km)
                   </option>
                 );

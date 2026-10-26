@@ -5,6 +5,7 @@ import {
   getHealth,
   getMetrics,
   getSatelliteFleet,
+  updateSatelliteStatus,
   getUsers,
   getAcquisitionPlan,
   getAcquisitionById,
@@ -24,6 +25,7 @@ router.get('/metrics', getMetrics);
 router.get('/geo-events', getGeoEvents);
 router.post('/geo-events', createGeoEvent);
 router.get('/satellites', getSatelliteFleet);
+router.post('/satellites/:id/status', updateSatelliteStatus);
 router.get('/users', getUsers);
 router.get('/acquisition-plan', getAcquisitionPlan);
 router.get('/acquisition-plan/stream', streamAcquisitionPlanUpdates);

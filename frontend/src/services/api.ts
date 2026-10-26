@@ -51,6 +51,9 @@ export interface SatelliteConfig {
   reference_latitude_deg: number;
   reference_direction: 1 | -1;
   reference_timestamp: string;
+  status?: 'active' | 'disabled';
+  reprogrammed_count?: number;
+  reassigned_count?: number;
 }
 
 export interface SatelliteFleetResponse {
@@ -162,7 +165,12 @@ export const SATELLITE_PALETTE: string[] = [
   '#eab308', '#fbbf24', '#f59e0b', '#fb923c', '#f97316',
 ];
 
+export const DISABLED_SATELLITE_COLOR = '#94a3b8';
+
 export function getSatelliteColor(sat: SatelliteConfig, indexHint?: number): string {
+  if ((sat.status || 'active').toLowerCase() === 'disabled') {
+    return DISABLED_SATELLITE_COLOR;
+  }
   if (typeof indexHint === 'number' && indexHint >= 0) {
     return SATELLITE_PALETTE[indexHint % SATELLITE_PALETTE.length];
   }
@@ -338,6 +346,22 @@ export async function fetchSatellites(): Promise<SatelliteFleetResponse> {
   return response.json();
 }
 
+export async function updateSatelliteStatus(
+  id: string,
+  status: 'active' | 'disabled'
+): Promise<{ status: string; data: SatelliteConfig }> {
+  const response = await fetch(`${API_BASE_URL}/satellites/${encodeURIComponent(id)}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to update satellite status: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export async function fetchUsers(): Promise<UsersResponse> {
   const response = await fetch(`${API_BASE_URL}/users`);
   if (!response.ok) {
@@ -463,7 +487,8 @@ export function subscribeToAcquisitionUpdates(
   onUpdate: (row: AcquisitionPlanRow) => void,
   onRequestEvaluated?: (evaluation: AcquisitionRequestEvaluationResult) => void,
   onCanceled?: (cancelEvent: AcquisitionCancelEventPayload) => void,
-  onQueueUpdated?: (queue: AcquisitionRequestQueueItem[]) => void
+  onQueueUpdated?: (queue: AcquisitionRequestQueueItem[]) => void,
+  onSatelliteStatusUpdated?: (sat: SatelliteConfig) => void
 ): () => void {
   const eventSource = new EventSource(`${API_BASE_URL}/acquisition-plan/stream`);
   eventSource.onmessage = (event) => {
@@ -505,6 +530,16 @@ export function subscribeToAcquisitionUpdates(
       }
     } catch (err) {
       console.error('Failed to parse SSE queue_updated event:', err);
+    }
+  });
+  eventSource.addEventListener('satellite_status_updated', (event: MessageEvent) => {
+    try {
+      const satPayload: SatelliteConfig = JSON.parse(event.data);
+      if (satPayload && satPayload.id) {
+        onSatelliteStatusUpdated?.(satPayload);
+      }
+    } catch (err) {
+      console.error('Failed to parse SSE satellite_status_updated event:', err);
     }
   });
   return () => {

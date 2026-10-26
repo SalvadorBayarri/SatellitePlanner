@@ -7,6 +7,7 @@ import {
   registerAcquisitionSseClient,
   publishAcquisitionUpdated,
   publishAcquisitionCanceled,
+  publishSatelliteStatusUpdated,
 } from '../events/nats';
 import { startAcquisitionPlanExecutor } from '../services/acquisitionExecutor';
 import {
@@ -16,6 +17,8 @@ import {
   fetchCurrentRequestQueue,
   broadcastCurrentRequestQueue,
   markOriginalAcquisitionAsReprogrammed,
+  reprogramPendingAcquisitionsForDisabledSatellite,
+  reassignEarlierAcquisitionsToReactivatedSatellite,
 } from '../services/requestQueueProcessor';
 import { isPointOnLand } from '../utils/landMask';
 
@@ -232,7 +235,8 @@ export async function getSatelliteFleet(_req: Request, res: Response): Promise<v
          orbit_orientation_deg,
          reference_latitude_deg,
          reference_direction,
-         reference_timestamp
+         reference_timestamp,
+         status
        FROM satellite_fleet
        ORDER BY orbit_orientation_deg ASC`
     );
@@ -247,6 +251,9 @@ export async function getSatelliteFleet(_req: Request, res: Response): Promise<v
         row.reference_timestamp instanceof Date
           ? row.reference_timestamp.toISOString()
           : String(row.reference_timestamp),
+      status: (String(row.status || 'active').toLowerCase() === 'disabled'
+        ? 'disabled'
+        : 'active') as 'active' | 'disabled',
     }));
 
     res.status(200).json({
@@ -257,6 +264,91 @@ export async function getSatelliteFleet(_req: Request, res: Response): Promise<v
     console.error('[Controller] Error fetching satellite_fleet:', error);
     res.status(500).json({
       error: 'Failed to retrieve satellite fleet configuration',
+      details: error?.message,
+    });
+  }
+}
+
+export async function updateSatelliteStatus(req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    const id = String(req.params.id);
+    const rawStatus = String(req.body?.status || '').toLowerCase();
+
+    if (rawStatus !== 'active' && rawStatus !== 'disabled') {
+      res.status(400).json({
+        error: 'Field "status" must be either "active" or "disabled".',
+      });
+      return;
+    }
+
+    const nextStatus: 'active' | 'disabled' = rawStatus;
+
+    const existingRes = await pool.query(
+      `SELECT id FROM satellite_fleet WHERE id = $1`,
+      [id]
+    );
+    if (existingRes.rows.length === 0) {
+      res.status(404).json({ error: 'Satellite not found.' });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE satellite_fleet SET status = $1 WHERE id = $2`,
+      [nextStatus, id]
+    );
+
+    let reprogrammedCount = 0;
+    let reassignedCount = 0;
+
+    if (nextStatus === 'disabled') {
+      reprogrammedCount = await reprogramPendingAcquisitionsForDisabledSatellite(id);
+    } else {
+      reassignedCount = await reassignEarlierAcquisitionsToReactivatedSatellite(id);
+    }
+
+    const updatedRes = await pool.query(
+      `SELECT
+         id,
+         orbit_altitude_km,
+         orbit_orientation_deg,
+         reference_latitude_deg,
+         reference_direction,
+         reference_timestamp,
+         status
+       FROM satellite_fleet
+       WHERE id = $1`,
+      [id]
+    );
+
+    const row = updatedRes.rows[0];
+    const updatedSat = {
+      id: String(row.id),
+      orbit_altitude_km: Number(row.orbit_altitude_km),
+      orbit_orientation_deg: Number(row.orbit_orientation_deg),
+      reference_latitude_deg: Number(row.reference_latitude_deg),
+      reference_direction: Number(row.reference_direction) as 1 | -1,
+      reference_timestamp:
+        row.reference_timestamp instanceof Date
+          ? row.reference_timestamp.toISOString()
+          : String(row.reference_timestamp),
+      status: (String(row.status || 'active').toLowerCase() === 'disabled'
+        ? 'disabled'
+        : 'active') as 'active' | 'disabled',
+      reprogrammed_count: reprogrammedCount,
+      reassigned_count: reassignedCount,
+    };
+
+    await publishSatelliteStatusUpdated(updatedSat);
+
+    res.status(200).json({
+      status: 'updated',
+      data: updatedSat,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error updating satellite status:', error);
+    res.status(500).json({
+      error: 'Failed to update satellite status',
       details: error?.message,
     });
   }
@@ -477,8 +569,8 @@ function sampleLandAcquisitionForSatellite(
     }
   }
 
-  // 2. Deterministic scan fallback (20-second steps from a random offset)
-  const stepMs = 20_000;
+  // 2. Deterministic scan fallback (5-second steps from a random offset)
+  const stepMs = 5_000;
   const steps = Math.max(1, Math.floor(windowMs / stepMs));
   const startStep = Math.floor(Math.random() * steps);
   for (let s = 0; s < steps; s++) {
@@ -545,8 +637,8 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
     }));
 
     const nowMs = Date.now();
-    const firstAcquisitionTimeMs = nowMs + 2 * 60 * 1000; // First acquisition 2 minutes after initialization
-    const maxAcquisitionTimeMs = nowMs + 3 * 60 * 60 * 1000; // Up to 3 hours after initialization
+    const firstAcquisitionTimeMs = nowMs + 30 * 1000; // First acquisition 30 seconds after initialization
+    const maxAcquisitionTimeMs = firstAcquisitionTimeMs + 30 * 60 * 1000; // Rest within a 30-minute period after first acquisition
     const durationSeconds = 20; // 20-second acquisition duration
     let addedCount = 0;
 

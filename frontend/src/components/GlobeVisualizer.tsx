@@ -197,7 +197,34 @@ function createSatelliteAndFootprintMesh(sat: SatellitePosition): THREE.Group {
 
   group.add(footprintMesh);
 
+  group.userData.colorHex = sat.color;
+  group.userData.phongMaterials = [bodyMat, wingMat, arrowMat];
+  group.userData.basicMaterials = [haloSphereMat, haloOuterRingMat, footprintMat, borderMat];
+
   return group;
+}
+
+function updateSatelliteMeshColor(group: THREE.Group, nextColorHex: string): void {
+  if (group.userData.colorHex === nextColorHex) return;
+  group.userData.colorHex = nextColorHex;
+  const nextColor = new THREE.Color(nextColorHex);
+
+  const phongMats = group.userData.phongMaterials as THREE.MeshPhongMaterial[] | undefined;
+  if (phongMats) {
+    phongMats.forEach((mat) => {
+      mat.color.copy(nextColor);
+      mat.emissive.copy(nextColor);
+    });
+  }
+
+  const basicMats = group.userData.basicMaterials as
+    | Array<THREE.MeshBasicMaterial | THREE.LineBasicMaterial>
+    | undefined;
+  if (basicMats) {
+    basicMats.forEach((mat) => {
+      mat.color.copy(nextColor);
+    });
+  }
 }
 
 /**
@@ -621,7 +648,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     const traceRes = orbitTraceRef.current;
     if (!traceRes) return;
 
-    if (!activeAcq || !activeSatId) {
+    if (!activeAcq || !activeSatId || (activeAcq.status || '').toLowerCase() === 'reprogrammed') {
       traceRes.group.visible = false;
       return;
     }
@@ -719,12 +746,20 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       for (let i = 0; i < fleet.length; i++) {
         const nextPos = computeSatellitePosition(fleet[i], simMs);
         Object.assign(positionObjectsRef.current[i], nextPos);
+        const cachedMesh = meshCacheRef.current.get(nextPos.id);
+        if (cachedMesh) {
+          updateSatelliteMeshColor(cachedMesh, nextPos.color);
+        }
       }
     }
 
     const combinedObjects: GlobeSceneObject[] = [...positionObjectsRef.current];
     const activeAcq = selectedAcquisitionRef.current;
-    if (activeAcq && selectedSatelliteIdRef.current) {
+    if (
+      activeAcq &&
+      selectedSatelliteIdRef.current &&
+      (activeAcq.status || '').toLowerCase() !== 'reprogrammed'
+    ) {
       const satCfg = fleet.find((s) => s.id === activeAcq.satellite_id);
       const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
       combinedObjects.push({
@@ -909,6 +944,8 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         if (!mesh) {
           mesh = createSatelliteAndFootprintMesh(sat);
           meshCacheRef.current.set(sat.id, mesh);
+        } else {
+          updateSatelliteMeshColor(mesh, sat.color);
         }
         return mesh;
       })
