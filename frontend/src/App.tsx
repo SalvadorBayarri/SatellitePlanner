@@ -1,9 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Satellite,
-  Radio,
   Activity,
-  PlusCircle,
   RefreshCw,
   MapPin,
   Camera,
@@ -30,7 +28,6 @@ import {
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
 import {
-  GeoEvent,
   SatelliteConfig,
   SatellitePosition,
   UserRow,
@@ -39,8 +36,6 @@ import {
   AcquisitionRequestEvaluationResult,
   AcquisitionCancelEventPayload,
   HealthResponse,
-  fetchGeoEvents,
-  createGeoEvent,
   fetchHealth,
   fetchSatellites,
   updateSatelliteStatus,
@@ -142,7 +137,6 @@ const DraggablePanel: React.FC<DraggablePanelProps> = ({
 };
 
 export function App() {
-  const [events, setEvents] = useState<GeoEvent[]>([]);
   const [satellites, setSatellites] = useState<SatelliteConfig[]>([]);
   const [users, setUsers] = useState<UserRow[]>([
     { id: 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c01', name: 'system' },
@@ -213,7 +207,6 @@ export function App() {
   const [processingEvaluationAction, setProcessingEvaluationAction] = useState<boolean>(false);
   const [cancelNotification, setCancelNotification] =
     useState<AcquisitionCancelEventPayload | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<GeoEvent | null>(null);
   const [selectedSatelliteId, setSelectedSatelliteId] = useState<string | null>(null);
   const [trackSelectedSatellite, setTrackSelectedSatellite] = useState<boolean>(false);
   const [confirmSatStatusTarget, setConfirmSatStatusTarget] = useState<SatellitePosition | null>(
@@ -226,10 +219,7 @@ export function App() {
   } | null>(null);
   const satStatusToastTimerRef = useRef<number | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
-  const [showGeoEvents] = useState<boolean>(false);
 
   // Simulation Clock State (anchors + speed factor 1x, 10x, 100x, 1000x)
   const [speedFactor, setSpeedFactor] = useState<number>(1);
@@ -343,29 +333,14 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [acquisitionPlan, recordStatsSnapshot]);
 
-  // New event form state
-  const [title, setTitle] = useState<string>('');
-  const [latitude, setLatitude] = useState<string>('28.5729');
-  const [longitude, setLongitude] = useState<string>('-80.6490');
-  const [intensity, setIntensity] = useState<string>('0.93');
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [lastAck, setLastAck] = useState<{ stream: string; seq: number } | null>(null);
-
   const loadData = useCallback(async () => {
     try {
-      setError(null);
-      const [eventsRes, healthRes] = await Promise.all([
-        fetchGeoEvents(1, 100),
-        fetchHealth().catch(() => null),
-      ]);
-      setEvents(eventsRes.data);
+      const healthRes = await fetchHealth().catch(() => null);
       if (healthRes) {
         setHealth(healthRes);
       }
-    } catch (err: any) {
-      setError(err.message || 'Unable to connect to Backend API');
-    } finally {
-      setLoading(false);
+    } catch {
+      // Ignore transient health polling errors
     }
   }, []);
 
@@ -655,34 +630,6 @@ export function App() {
     }
   };
 
-  const handlePublishEvent = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim()) return;
-
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await createGeoEvent({
-        title: title.trim(),
-        latitude: parseFloat(latitude),
-        longitude: parseFloat(longitude),
-        intensity: parseFloat(intensity),
-      });
-      setLastAck(res.jetstream);
-      setTitle('');
-
-      // Wait briefly for the NATS JetStream durable consumer to write to PostgreSQL, then refresh
-      setTimeout(async () => {
-        await loadData();
-        setSelectedEvent(res.event);
-      }, 300);
-    } catch (err: any) {
-      setError(err.message || 'Failed to publish event');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   // Compute live position of the currently selected satellite (remains open until another satellite is selected or closed)
   const activeSatellite: SatellitePosition | null = React.useMemo(() => {
     if (!selectedSatelliteId) return null;
@@ -925,9 +872,7 @@ export function App() {
     <div className="app-shell">
       {/* 3D WebGL Globe Background */}
       <GlobeVisualizer
-        events={showGeoEvents ? events : []}
         satellites={satellites}
-        selectedEvent={showGeoEvents ? selectedEvent : null}
         selectedSatelliteId={selectedSatelliteId}
         selectedAcquisition={
           activeSatellite &&
@@ -938,10 +883,6 @@ export function App() {
         }
         acquisitionFocusKey={acquisitionFocusKey}
         trackSelectedSatellite={trackSelectedSatellite}
-        onSelectEvent={(ev) => {
-          setSelectedEvent(ev);
-          setAutoRotate(false);
-        }}
         onSelectSatellite={(sat) => {
           setSelectedSatelliteId(sat.id);
         }}
@@ -1208,18 +1149,6 @@ export function App() {
             <Globe2 size={15} />
             <span>{autoRotate ? 'Orbiting' : 'Paused'}</span>
           </button>
-
-          {showGeoEvents && (
-            <button
-              type="button"
-              className="hud-btn"
-              onClick={loadData}
-              title="Refresh Telemetry"
-            >
-              <RefreshCw size={15} className={loading ? 'spin' : ''} />
-              <span>Sync ({events.length})</span>
-            </button>
-          )}
         </div>
       </header>
 
@@ -2638,130 +2567,6 @@ export function App() {
         </div>
       </DraggablePanel>
 
-      {/* Left Panel: Event Ingestion Publisher & Live Feed (Shown only when Geo-Events switch is ON) */}
-      {showGeoEvents && (
-        <aside className="left-panel">
-          <section className="glass-card">
-            <div className="card-header">
-              <PlusCircle size={16} className="accent-cyan" />
-              <h2>Publish Geo-Event (JetStream)</h2>
-            </div>
-
-            <form onSubmit={handlePublishEvent} className="ingest-form">
-              <div className="field-group">
-                <label htmlFor="event-title">Telemetry Event Title</label>
-                <input
-                  id="event-title"
-                  type="text"
-                  placeholder="e.g., Cape Canaveral Downlink Burst"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="field-row">
-                <div className="field-group">
-                  <label htmlFor="event-lat">Latitude (°)</label>
-                  <input
-                    id="event-lat"
-                    type="number"
-                    step="0.0001"
-                    min="-90"
-                    max="90"
-                    value={latitude}
-                    onChange={(e) => setLatitude(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="field-group">
-                  <label htmlFor="event-lng">Longitude (°)</label>
-                  <input
-                    id="event-lng"
-                    type="number"
-                    step="0.0001"
-                    min="-180"
-                    max="180"
-                    value={longitude}
-                    onChange={(e) => setLongitude(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="field-group">
-                  <label htmlFor="event-int">Intensity</label>
-                  <input
-                    id="event-int"
-                    type="number"
-                    step="0.01"
-                    min="0.1"
-                    max="1.0"
-                    value={intensity}
-                    onChange={(e) => setIntensity(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <button type="submit" className="submit-btn" disabled={submitting}>
-                <Radio size={15} />
-                <span>{submitting ? 'Publishing to NATS...' : 'Emit to geo.events.created'}</span>
-              </button>
-
-              {lastAck && (
-                <div className="ack-banner">
-                  ACK Stream: <strong>{lastAck.stream}</strong> • Seq #{lastAck.seq}
-                </div>
-              )}
-              {error && <div className="error-banner">{error}</div>}
-            </form>
-          </section>
-
-          <section className="glass-card feed-card">
-            <div className="card-header">
-              <Activity size={16} className="accent-cyan" />
-              <h2>Global Telemetry Stream ({events.length})</h2>
-            </div>
-
-            <div className="events-list">
-              {events.map((ev) => {
-                const isSelected = selectedEvent?.id === ev.id;
-                return (
-                  <div
-                    key={ev.id}
-                    className={`event-item ${isSelected ? 'selected' : ''}`}
-                    onClick={() => {
-                      setSelectedEvent(ev);
-                      setAutoRotate(false);
-                    }}
-                  >
-                    <div className="event-item-top">
-                      <span className="event-title">{ev.title}</span>
-                      <span
-                        className={`intensity-badge ${
-                          ev.intensity >= 0.9
-                            ? 'critical'
-                            : ev.intensity >= 0.8
-                            ? 'high'
-                            : 'normal'
-                        }`}
-                      >
-                        {(ev.intensity * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                    <div className="event-coords">
-                      <MapPin size={12} />
-                      <span>
-                        {ev.latitude.toFixed(3)}°, {ev.longitude.toFixed(3)}°
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        </aside>
-      )}
-
       {/* Draggable Persistent Selected Satellite Info Popup */}
       {activeSatellite && (
         <DraggablePanel
@@ -3078,56 +2883,6 @@ export function App() {
             <AlertCircle size={13} />
             <span>{markingFailed ? 'Marking as Failed...' : 'Mark as Failed'}</span>
           </button>
-        </DraggablePanel>
-      )}
-
-      {/* Draggable Selected 3D Geo-Event Marker Tooltip Modal */}
-      {showGeoEvents && selectedEvent && (
-        <DraggablePanel
-          className="selected-tooltip-card"
-          initialPosition={{ x: Math.max(20, window.innerWidth - 364), y: Math.max(120, window.innerHeight - 230) }}
-          ariaLabel="Selected Event Details"
-        >
-          <div className="tooltip-header drag-handle-header">
-            <span className="tooltip-tag">ACTIVE 3D MARKER TELEMETRY</span>
-            <div className="header-actions">
-              <GripHorizontal size={15} className="drag-grip-icon" />
-              <button
-                type="button"
-                className="close-btn"
-                onClick={() => setSelectedEvent(null)}
-                aria-label="Close details"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          </div>
-          <h3>{selectedEvent.title}</h3>
-          <div className="tooltip-grid">
-            <div>
-              <span className="label">LATITUDE</span>
-              <span className="mono">{selectedEvent.latitude.toFixed(5)}°</span>
-            </div>
-            <div>
-              <span className="label">LONGITUDE</span>
-              <span className="mono">{selectedEvent.longitude.toFixed(5)}°</span>
-            </div>
-            <div>
-              <span className="label">SIGNAL INTENSITY</span>
-              <span className="mono highlight">{(selectedEvent.intensity * 100).toFixed(1)}%</span>
-            </div>
-            <div>
-              <span className="label">TIMESTAMP</span>
-              <span className="mono">
-                {new Date(selectedEvent.created_at).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit',
-                })}
-              </span>
-            </div>
-          </div>
-          <div className="tooltip-id">UUID: {selectedEvent.id}</div>
         </DraggablePanel>
       )}
     </div>

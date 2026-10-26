@@ -237,20 +237,6 @@ body,
   }
 }
 
-/* Left Control & Feed Panel */
-.left-panel {
-  position: absolute;
-  top: 96px;
-  left: 20px;
-  bottom: 20px;
-  width: 350px;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  pointer-events: none;
-}
-
 .glass-card {
   pointer-events: auto;
   background: var(--glass-bg);
@@ -278,12 +264,6 @@ body,
 
 .accent-cyan {
   color: var(--accent-cyan);
-}
-
-.ingest-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .field-group {
@@ -345,16 +325,6 @@ body,
   cursor: not-allowed;
 }
 
-.ack-banner {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(16, 185, 129, 0.4);
-  color: #6ee7b7;
-}
-
 .error-banner {
   font-size: 11px;
   padding: 6px 10px;
@@ -362,86 +332,6 @@ body,
   background: rgba(244, 63, 94, 0.15);
   border: 1px solid rgba(244, 63, 94, 0.4);
   color: #fda4af;
-}
-
-.feed-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.events-list {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 4px;
-}
-
-.event-item {
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.65);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.event-item:hover,
-.event-item.selected {
-  background: rgba(30, 41, 59, 0.9);
-  border-color: var(--accent-cyan);
-}
-
-.event-item-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.event-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #f1f5f9;
-}
-
-.intensity-badge {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.intensity-badge.critical {
-  background: rgba(244, 63, 94, 0.2);
-  color: #fb7185;
-  border: 1px solid rgba(244, 63, 94, 0.4);
-}
-
-.intensity-badge.high {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.4);
-}
-
-.intensity-badge.normal {
-  background: rgba(56, 189, 248, 0.2);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.4);
-}
-
-.event-coords {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--text-secondary);
 }
 
 /* Draggable Popup Panels */
@@ -683,21 +573,7 @@ body,
   color: var(--accent-amber);
 }
 
-/* Selected 3D Marker Tooltip Card */
-.selected-tooltip-card {
-  position: absolute;
-  right: 24px;
-  bottom: 24px;
-  width: 340px;
-  z-index: 15;
-  background: rgba(15, 23, 42, 0.92);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--accent-cyan);
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
-}
-
+/* Tooltip Shared Header & Grid Styles */
 .tooltip-header {
   display: flex;
   align-items: center;
@@ -721,13 +597,6 @@ body,
 }
 
 .close-btn:hover {
-  color: #ffffff;
-}
-
-.selected-tooltip-card h3 {
-  font-size: 15px;
-  font-weight: 700;
-  margin-bottom: 12px;
   color: #ffffff;
 }
 

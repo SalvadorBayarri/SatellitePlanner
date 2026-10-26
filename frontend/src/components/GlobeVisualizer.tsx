@@ -2,7 +2,6 @@ import React, { useEffect, useRef } from 'react';
 import Globe, { GlobeInstance } from 'globe.gl';
 import * as THREE from 'three';
 import {
-  GeoEvent,
   SatelliteConfig,
   SatellitePosition,
   AcquisitionPlanRow,
@@ -13,14 +12,11 @@ import {
 } from '../services/api';
 
 interface GlobeVisualizerProps {
-  events: GeoEvent[];
   satellites: SatelliteConfig[];
-  selectedEvent: GeoEvent | null;
   selectedSatelliteId: string | null;
   selectedAcquisition: AcquisitionPlanRow | null;
   acquisitionFocusKey?: number;
   trackSelectedSatellite: boolean;
-  onSelectEvent: (event: GeoEvent) => void;
   onSelectSatellite: (satellite: SatellitePosition) => void;
   onFocusAcquisition?: () => void;
   isPickingLocation?: boolean;
@@ -40,13 +36,6 @@ type GlobeSceneObject = SatellitePosition | AcquisitionRenderObject;
 
 function isAcquisitionObject(obj: any): obj is AcquisitionRenderObject {
   return Boolean(obj && obj.isAcquisitionTarget === true);
-}
-
-function getIntensityColor(intensity: number): string {
-  if (intensity >= 0.9) return '#f43f5e'; // Rose / Critical
-  if (intensity >= 0.8) return '#f59e0b'; // Amber / High
-  if (intensity >= 0.7) return '#06b6d4'; // Cyan / Elevated
-  return '#10b981'; // Emerald / Nominal
 }
 
 /**
@@ -532,14 +521,11 @@ function createDayNightEarthShaderMaterial(
 }
 
 export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
-  events,
   satellites,
-  selectedEvent,
   selectedSatelliteId,
   selectedAcquisition,
   acquisitionFocusKey = 0,
   trackSelectedSatellite,
-  onSelectEvent,
   onSelectSatellite,
   onFocusAcquisition,
   isPickingLocation = false,
@@ -549,12 +535,10 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<GlobeInstance | null>(null);
-  const eventsRef = useRef<GeoEvent[]>(events);
   const satellitesRef = useRef<SatelliteConfig[]>(satellites);
   const selectedSatelliteIdRef = useRef<string | null>(selectedSatelliteId);
   const selectedAcquisitionRef = useRef<AcquisitionPlanRow | null>(selectedAcquisition);
   const trackSelectedSatelliteRef = useRef<boolean>(trackSelectedSatellite);
-  const onSelectEventRef = useRef(onSelectEvent);
   const onSelectSatelliteRef = useRef(onSelectSatellite);
   const onFocusAcquisitionRef = useRef(onFocusAcquisition);
   const isPickingLocationRef = useRef<boolean>(isPickingLocation);
@@ -566,36 +550,15 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
   const positionObjectsRef = useRef<SatellitePosition[]>([]);
   const earthShaderMatRef = useRef<THREE.ShaderMaterial | null>(null);
 
-  eventsRef.current = events;
   satellitesRef.current = satellites;
   selectedSatelliteIdRef.current = selectedSatelliteId;
   selectedAcquisitionRef.current = selectedAcquisition;
   trackSelectedSatelliteRef.current = trackSelectedSatellite;
-  onSelectEventRef.current = onSelectEvent;
   onSelectSatelliteRef.current = onSelectSatellite;
   onFocusAcquisitionRef.current = onFocusAcquisition;
   isPickingLocationRef.current = isPickingLocation;
   onPickLocationRef.current = onPickLocation;
   getSimulatedTimeMsRef.current = getSimulatedTimeMs;
-
-  const syncDataToGlobe = (globe: GlobeInstance, currentEvents: GeoEvent[]) => {
-    globe.pointsData(currentEvents);
-    globe.ringsData(currentEvents.filter((e) => e.intensity >= 0.75));
-
-    const arcs = [];
-    for (let i = 0; i < Math.min(currentEvents.length - 1, 14); i++) {
-      const source = currentEvents[i];
-      const target = currentEvents[(i + 1) % currentEvents.length];
-      arcs.push({
-        startLat: source.latitude,
-        startLng: source.longitude,
-        endLat: target.latitude,
-        endLng: target.longitude,
-        color: [getIntensityColor(source.intensity), getIntensityColor(target.intensity)],
-      });
-    }
-    globe.arcsData(arcs);
-  };
 
   const updateSelectionHalos = (activeId: string | null, pulsePhase = 0) => {
     meshCacheRef.current.forEach((group, id) => {
@@ -823,7 +786,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     orbitTraceRef.current = traceResources;
     globe.scene().add(traceResources.group);
 
-    // Step 2: Configure dimensions, custom Day/Night ShaderMaterial, atmosphere, points, rings, arcs, and 3D satellites
+    // Step 2: Configure dimensions, custom Day/Night ShaderMaterial, atmosphere, and 3D satellites
     globe
       .width(container.clientWidth || window.innerWidth)
       .height(container.clientHeight || window.innerHeight)
@@ -833,72 +796,6 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       .showAtmosphere(true)
       .atmosphereColor('#38bdf8')
       .atmosphereAltitude(0.22)
-      .pointLat((d: object) => (d as GeoEvent).latitude)
-      .pointLng((d: object) => (d as GeoEvent).longitude)
-      .pointAltitude((d: object) => Math.max(0.08, (d as GeoEvent).intensity * 0.36))
-      .pointRadius((d: object) => 0.55 + (d as GeoEvent).intensity * 0.45)
-      .pointColor((d: object) => getIntensityColor((d as GeoEvent).intensity))
-      .pointLabel((d: object) => {
-        const ev = d as GeoEvent;
-        const color = getIntensityColor(ev.intensity);
-        return `
-          <div style="
-            background: rgba(15, 23, 42, 0.94);
-            border: 1px solid ${color};
-            border-radius: 8px;
-            padding: 10px 14px;
-            color: #f8fafc;
-            font-family: 'Inter', sans-serif;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-            min-width: 210px;
-          ">
-            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: ${color}; font-weight: 700; margin-bottom: 4px;">
-              SATELLITE TELEMETRY EVENT
-            </div>
-            <div style="font-size: 14px; font-weight: 600; margin-bottom: 6px;">
-              ${ev.title}
-            </div>
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between;">
-              <span>LAT: ${ev.latitude.toFixed(4)}°</span>
-              <span>LNG: ${ev.longitude.toFixed(4)}°</span>
-            </div>
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #cbd5e1; margin-top: 4px;">
-              INTENSITY: <strong style="color: ${color}">${(ev.intensity * 100).toFixed(0)}%</strong>
-            </div>
-          </div>
-        `;
-      })
-      .onPointClick((point: object) => {
-        const ev = point as GeoEvent;
-        onSelectEventRef.current(ev);
-      })
-      .ringLat((d: object) => (d as GeoEvent).latitude)
-      .ringLng((d: object) => (d as GeoEvent).longitude)
-      .ringAltitude(0.015)
-      .ringColor((d: object) => {
-        const color = getIntensityColor((d as GeoEvent).intensity);
-        return (t: number) => {
-          const alpha = Math.max(0, 1 - t);
-          return color === '#f43f5e'
-            ? `rgba(244, 63, 94, ${alpha})`
-            : color === '#f59e0b'
-            ? `rgba(245, 158, 11, ${alpha})`
-            : `rgba(56, 189, 248, ${alpha})`;
-        };
-      })
-      .ringMaxRadius((d: object) => 3.0 + (d as GeoEvent).intensity * 4.5)
-      .ringPropagationSpeed(2.2)
-      .ringRepeatPeriod(950)
-      .arcStartLat((d: any) => d.startLat)
-      .arcStartLng((d: any) => d.startLng)
-      .arcEndLat((d: any) => d.endLat)
-      .arcEndLng((d: any) => d.endLng)
-      .arcColor((d: any) => d.color)
-      .arcDashLength(0.45)
-      .arcDashGap(0.25)
-      .arcDashAnimateTime(2200)
-      .arcStroke(0.65)
-      .arcAltitudeAutoScale(0.38)
       // Polar-orbiting Satellite Fleet + 300x300 km Capture Coverage Footprint + Highlighted Acquisition Area
       .objectLat((d: object) =>
         isAcquisitionObject(d)
@@ -1052,8 +949,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     // Set initial camera perspective
     globe.pointOfView({ lat: 24, lng: 12, altitude: 2.15 }, 0);
 
-    // Sync any events and satellites that already arrived before mount finished
-    syncDataToGlobe(globe, eventsRef.current);
+    // Sync satellites that already arrived before mount finished
     syncSatellitesToGlobe(globe, satellitesRef.current);
 
     // Real-time / accelerated orbital & solar terminator propagation loop (~20 FPS)
@@ -1140,30 +1036,11 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     }
   }, [selectedAcquisition, acquisitionFocusKey]);
 
-  // Sync events, rings, and orbital relay arcs onto the 3D globe whenever events change
-  useEffect(() => {
-    if (!globeRef.current) return;
-    syncDataToGlobe(globeRef.current, events);
-  }, [events]);
-
   // Sync satellite fleet immediately when loaded
   useEffect(() => {
     if (!globeRef.current) return;
     syncSatellitesToGlobe(globeRef.current, satellites);
   }, [satellites]);
-
-  // Smooth camera fly-to when an event is selected
-  useEffect(() => {
-    if (!globeRef.current || !selectedEvent) return;
-    globeRef.current.pointOfView(
-      {
-        lat: selectedEvent.latitude,
-        lng: selectedEvent.longitude,
-        altitude: 1.55,
-      },
-      1100
-    );
-  }, [selectedEvent]);
 
   return (
     <div

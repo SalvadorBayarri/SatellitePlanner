@@ -24,13 +24,14 @@ app.use('/api/v1', apiRoutes);
 // Root info endpoint
 app.get('/', (_req, res) => {
   res.json({
-    service: 'SatellitePlanner Geo-Events API',
+    service: 'SatellitePlanner API',
     version: '1.0.0',
     endpoints: {
       health: '/api/v1/health',
       metrics: '/api/v1/metrics',
-      geoEvents: '/api/v1/geo-events',
       satellites: '/api/v1/satellites',
+      acquisitionPlan: '/api/v1/acquisition-plan',
+      acquisitionRequests: '/api/v1/acquisition-requests',
     },
   });
 });

@@ -86,18 +86,13 @@ async function runMigrations(): Promise<void> {
 export async function checkDbHealth(): Promise<{
   connected: boolean;
   mode: string;
-  totalEvents?: number;
   totalSatellites?: number;
 }> {
   try {
-    const [eventsRes, satRes] = await Promise.all([
-      pool.query('SELECT COUNT(*)::int AS count FROM geo_events'),
-      pool.query('SELECT COUNT(*)::int AS count FROM satellite_fleet'),
-    ]);
+    const satRes = await pool.query('SELECT COUNT(*)::int AS count FROM satellite_fleet');
     return {
       connected: true,
       mode: dbMode,
-      totalEvents: eventsRes.rows[0]?.count ?? 0,
       totalSatellites: satRes.rows[0]?.count ?? 0,
     };
   } catch (error) {

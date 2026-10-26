@@ -10,18 +10,7 @@ import {
   StringCodec,
 } from 'nats';
 import { Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
-import { getPool } from '../db';
-
-export interface GeoEventPayload {
-  id?: string;
-  title: string;
-  latitude: number;
-  longitude: number;
-  intensity: number;
-  created_at?: string;
-}
 
 export interface AcquisitionPlanUpdatePayload {
   id: string;
@@ -201,39 +190,7 @@ export async function initNatsJetStream(): Promise<void> {
   jsm = await nc.jetstreamManager();
   js = nc.jetstream();
 
-  // 1. Ensure GEO_STREAM exists (targeting geo.events.>)
-  try {
-    await jsm.streams.info(config.streamName);
-    console.log(`[NATS] JetStream stream "${config.streamName}" already exists.`);
-  } catch {
-    await jsm.streams.add({
-      name: config.streamName,
-      subjects: config.streamSubjects,
-      retention: RetentionPolicy.Limits,
-      storage: StorageType.File,
-      max_msgs: 100000,
-    });
-    console.log(
-      `[NATS] Created JetStream stream "${config.streamName}" for subjects ${config.streamSubjects.join(', ')}`
-    );
-  }
-
-  // Ensure Durable Consumer for geo.events.created exists
-  try {
-    await jsm.consumers.info(config.streamName, config.consumerDurableName);
-  } catch {
-    await jsm.consumers.add(config.streamName, {
-      durable_name: config.consumerDurableName,
-      ack_policy: AckPolicy.Explicit,
-      deliver_policy: DeliverPolicy.All,
-      filter_subject: config.eventSubjectCreated,
-    });
-    console.log(
-      `[NATS] Created durable consumer "${config.consumerDurableName}" on stream "${config.streamName}"`
-    );
-  }
-
-  // 2. Ensure ACQUISITION_STREAM exists (targeting acquisition.plan.>)
+  // Ensure ACQUISITION_STREAM exists (targeting acquisition.plan.>)
   try {
     await jsm.streams.info(config.acquisitionStreamName);
     console.log(`[NATS] JetStream stream "${config.acquisitionStreamName}" already exists.`);
@@ -250,46 +207,10 @@ export async function initNatsJetStream(): Promise<void> {
     );
   }
 
-  // Start background consumers
-  startDurableConsumer().catch((err) => {
-    console.error('[NATS] Durable consumer error:', err);
-  });
-
+  // Start background consumer for real-time acquisition plan SSE push
   startAcquisitionStreamConsumer().catch((err) => {
     console.error('[NATS] Acquisition stream consumer error:', err);
   });
-}
-
-export async function publishGeoEventCreated(payload: GeoEventPayload): Promise<{
-  event: Required<GeoEventPayload>;
-  stream: string;
-  seq: number;
-}> {
-  if (!js) {
-    throw new Error('NATS JetStream client is not initialized');
-  }
-
-  const event: Required<GeoEventPayload> = {
-    id: payload.id || uuidv4(),
-    title: payload.title,
-    latitude: Number(payload.latitude),
-    longitude: Number(payload.longitude),
-    intensity: Number(payload.intensity),
-    created_at: payload.created_at || new Date().toISOString(),
-  };
-
-  const pubAck = await js.publish(config.eventSubjectCreated, sc.encode(JSON.stringify(event)));
-  publishedCount++;
-
-  console.log(
-    `[NATS Publisher] Published event "${event.title}" (${event.id}) to ${config.eventSubjectCreated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
-  );
-
-  return {
-    event,
-    stream: pubAck.stream,
-    seq: pubAck.seq,
-  };
 }
 
 /**
@@ -439,43 +360,8 @@ export async function publishSatelliteStatusUpdated(
   }
 }
 
-async function startDurableConsumer(): Promise<void> {
-  if (!js) return;
-
-  const consumer = await js.consumers.get(config.streamName, config.consumerDurableName);
-  const messages = await consumer.consume();
-
-  console.log(
-    `[NATS Consumer] Listening for "${config.eventSubjectCreated}" messages on durable consumer "${config.consumerDurableName}"...`
-  );
-
-  for await (const msg of messages) {
-    try {
-      const rawData = sc.decode(msg.data);
-      const data: Required<GeoEventPayload> = JSON.parse(rawData);
-
-      const pool = getPool();
-      await pool.query(
-        `INSERT INTO geo_events (id, title, latitude, longitude, intensity, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO NOTHING`,
-        [data.id, data.title, data.latitude, data.longitude, data.intensity, data.created_at]
-      );
-
-      msg.ack();
-      consumedCount++;
-      console.log(
-        `[NATS Consumer] Persisted event "${data.title}" (${data.id}) to PostgreSQL [seq=${msg.seq}]`
-      );
-    } catch (err) {
-      console.error('[NATS Consumer] Failed to process message:', err);
-      msg.nak(5000);
-    }
-  }
-}
-
 /**
- * Consumes real-time "acquisition.plan.updated" messages from NATS JetStream (ACQUISITION_STREAM)
+ * Consumes real-time "acquisition.plan.>" messages from NATS JetStream (ACQUISITION_STREAM)
  * and pushes them immediately to all subscribed frontend SSE clients.
  */
 async function startAcquisitionStreamConsumer(): Promise<void> {
@@ -535,11 +421,11 @@ export async function checkNatsHealth(): Promise<{
   }
 
   try {
-    const streamInfo = await jsm.streams.info(config.streamName);
+    const streamInfo = await jsm.streams.info(config.acquisitionStreamName);
     return {
       connected: true,
       server: nc.getServer(),
-      stream: config.streamName,
+      stream: config.acquisitionStreamName,
       streamMessages: streamInfo.state.messages,
       publishedCount,
       consumedCount,
