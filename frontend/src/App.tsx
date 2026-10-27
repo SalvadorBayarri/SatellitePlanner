@@ -24,6 +24,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Sparkles,
+  Play,
+  Square,
   X,
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
@@ -41,6 +43,7 @@ import {
   updateSatelliteStatus,
   fetchUsers,
   initializeAcquisitionPlan,
+  stopAcquisitionPlan,
   fetchAcquisitionPlan,
   fetchAcquisitionById,
   fetchAcquisitionRequestsQueue,
@@ -143,6 +146,8 @@ export function App() {
     { id: 'c2eebc99-9c0b-4ef8-bb6d-6bb9bd380c02', name: 'demo' },
   ]);
   const [acquisitionPlan, setAcquisitionPlan] = useState<AcquisitionPlanRow[]>([]);
+  const [isPlanRunning, setIsPlanRunning] = useState<boolean>(false);
+  const [togglingPlanRunState, setTogglingPlanRunState] = useState<boolean>(false);
   const [selectedAcquisitionId, setSelectedAcquisitionId] = useState<string | null>(null);
   const [acquisitionFocusKey, setAcquisitionFocusKey] = useState<number>(0);
   const [showImagePopup, setShowImagePopup] = useState<boolean>(false);
@@ -344,7 +349,7 @@ export function App() {
     }
   }, []);
 
-  // Read satellite fleet, users, and initialize the 3-hour acquisition plan at startup
+  // Read satellite fleet, users, and any already-active acquisition plan at startup (does not auto-start a new plan)
   const startupInitRef = useRef<boolean>(false);
   useEffect(() => {
     if (startupInitRef.current) return;
@@ -352,13 +357,14 @@ export function App() {
 
     Promise.all([
       fetchSatellites(),
-      initializeAcquisitionPlan(),
+      fetchAcquisitionPlan().catch(() => ({ data: [], total: 0 })),
       fetchUsers().catch(() => null),
       fetchAcquisitionRequestsQueue().catch(() => null),
     ])
       .then(([satRes, planRes, usersRes, queueRes]) => {
         setSatellites(satRes.data);
         setAcquisitionPlan(planRes.data);
+        setIsPlanRunning(planRes.data.length > 0);
         if (usersRes && usersRes.data.length > 0) {
           setUsers(usersRes.data);
         }
@@ -368,6 +374,56 @@ export function App() {
       })
       .catch((err) => console.error('Failed to load satellite fleet or acquisition plan:', err));
   }, []);
+
+  useEffect(() => {
+    if (acquisitionPlan.length > 0 && !isPlanRunning) {
+      setIsPlanRunning(true);
+    }
+  }, [acquisitionPlan.length, isPlanRunning]);
+
+  const handleTogglePlanRunState = async () => {
+    if (togglingPlanRunState) return;
+    setTogglingPlanRunState(true);
+    try {
+      if (!isPlanRunning) {
+        const [planRes, satRes] = await Promise.all([
+          initializeAcquisitionPlan(),
+          fetchSatellites(),
+        ]);
+        timelineStartAnchorRef.current = null;
+        setSatellites(satRes.data);
+        setAcquisitionPlan(planRes.data);
+        setRequestsQueue([]);
+        setEvaluationPopupResult(null);
+        setCancelNotification(null);
+        setStatsHistory([
+          {
+            timeMs: Date.now(),
+            completed: 0,
+            failed: 0,
+            reprogrammed: 0,
+            failedOrReprogrammed: 0,
+          },
+        ]);
+        setIsPlanRunning(true);
+      } else {
+        await stopAcquisitionPlan();
+        const satRes = await fetchSatellites();
+        timelineStartAnchorRef.current = null;
+        setSatellites(satRes.data);
+        setAcquisitionPlan([]);
+        setRequestsQueue([]);
+        setEvaluationPopupResult(null);
+        setCancelNotification(null);
+        setShowImagePopup(false);
+        setIsPlanRunning(false);
+      }
+    } catch (err) {
+      console.error('Failed to toggle acquisition plan execution state:', err);
+    } finally {
+      setTogglingPlanRunState(false);
+    }
+  };
 
   // Subscribe to real-time acquisition status updates, request evaluations, cancellations, and queue changes via Server-Sent Events (NATS JetStream push)
   useEffect(() => {
@@ -943,6 +999,22 @@ export function App() {
           >
             <Activity size={15} />
           </div>
+
+          {/* Start / End Acquisition Plan Session Button */}
+          <button
+            type="button"
+            className={`hud-btn plan-session-btn ${isPlanRunning ? 'running' : 'stopped'}`}
+            disabled={togglingPlanRunState}
+            onClick={handleTogglePlanRunState}
+            title={
+              isPlanRunning
+                ? 'Stop the active acquisition plan and clear background execution timers'
+                : 'Initialize and start a new 30-minute acquisition plan session'
+            }
+          >
+            {isPlanRunning ? <Square size={14} /> : <Play size={14} />}
+            <span>{togglingPlanRunState ? '...' : isPlanRunning ? 'End' : 'Start'}</span>
+          </button>
 
           {/* Image Requests Dropdown Button (Request Image, Batch Requests, Requests Queue) */}
           <div className="hud-dropdown-wrapper">

@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import { config } from './config';
@@ -21,20 +23,42 @@ app.use(express.json());
 // Mount REST API v1 routes
 app.use('/api/v1', apiRoutes);
 
-// Root info endpoint
-app.get('/', (_req, res) => {
-  res.json({
-    service: 'SatellitePlanner API',
-    version: '1.0.0',
-    endpoints: {
-      health: '/api/v1/health',
-      metrics: '/api/v1/metrics',
-      satellites: '/api/v1/satellites',
-      acquisitionPlan: '/api/v1/acquisition-plan',
-      acquisitionRequests: '/api/v1/acquisition-requests',
-    },
+// Serve compiled Frontend static files in production (if frontend/dist exists)
+const candidateFrontendDirs = [
+  path.resolve(__dirname, '../../frontend/dist'),
+  path.resolve(process.cwd(), 'frontend/dist'),
+  path.resolve(process.cwd(), '../frontend/dist'),
+];
+const frontendDistDir = candidateFrontendDirs.find((dir) =>
+  fs.existsSync(path.join(dir, 'index.html'))
+);
+
+if (frontendDistDir) {
+  console.log(`[Server] Serving static frontend build from ${frontendDistDir}`);
+  app.use(express.static(frontendDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      next();
+      return;
+    }
+    res.sendFile(path.join(frontendDistDir, 'index.html'));
   });
-});
+} else {
+  // Root info endpoint when running backend standalone in dev
+  app.get('/', (_req, res) => {
+    res.json({
+      service: 'SatellitePlanner API',
+      version: '1.0.0',
+      endpoints: {
+        health: '/api/v1/health',
+        metrics: '/api/v1/metrics',
+        satellites: '/api/v1/satellites',
+        acquisitionPlan: '/api/v1/acquisition-plan',
+        acquisitionRequests: '/api/v1/acquisition-requests',
+      },
+    });
+  });
+}
 
 async function bootstrap(): Promise<void> {
   try {

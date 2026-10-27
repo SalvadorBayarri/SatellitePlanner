@@ -276,7 +276,9 @@ export function computeSubsolarPoint(timeMs: number): { lat: number; lng: number
   return { lat: subsolarLat, lng: subsolarLng };
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api/v1';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV ? 'http://localhost:3001/api/v1' : '/api/v1');
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE_URL}/health`);
@@ -325,6 +327,17 @@ export async function initializeAcquisitionPlan(): Promise<AcquisitionPlanRespon
   });
   if (!response.ok) {
     throw new Error(`Failed to initialize acquisition plan: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function stopAcquisitionPlan(): Promise<AcquisitionPlanResponse> {
+  const response = await fetch(`${API_BASE_URL}/acquisition-plan/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to stop acquisition plan: ${response.statusText}`);
   }
   return response.json();
 }

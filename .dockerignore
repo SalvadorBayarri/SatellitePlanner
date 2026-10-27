@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+.tools
+.git
+nats-data
+backend/dist
+frontend/dist
+*.log
+.env

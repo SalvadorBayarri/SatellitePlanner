@@ -8,7 +8,10 @@ import {
   publishAcquisitionCanceled,
   publishSatelliteStatusUpdated,
 } from '../events/nats';
-import { startAcquisitionPlanExecutor } from '../services/acquisitionExecutor';
+import {
+  startAcquisitionPlanExecutor,
+  stopAcquisitionPlanExecutor,
+} from '../services/acquisitionExecutor';
 import {
   triggerRequestQueueProcessor,
   clearReservationTimer,
@@ -286,7 +289,9 @@ function mapAcquisitionRow(row: any) {
 
 export function streamAcquisitionPlanUpdates(req: Request, res: Response): void {
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  req.socket?.setNoDelay?.(true);
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
@@ -492,10 +497,11 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
   try {
     const pool = getPool();
 
-    // Clear existing acquisition plan rows and old request queue before initializing new 3h plan
+    // Clear existing acquisition plan rows, old request queue, and reset satellites to active
     clearAllReservationTimers();
     await pool.query('DELETE FROM acquisition_plan');
     await pool.query('DELETE FROM acquisition_requests');
+    await pool.query(`UPDATE satellite_fleet SET status = 'active'`);
     await broadcastCurrentRequestQueue();
 
     // Look up the "system" user ID
@@ -648,6 +654,30 @@ export async function initializeAcquisitionPlan(_req: Request, res: Response): P
     console.error('[Controller] Error initializing acquisition_plan:', error);
     res.status(500).json({
       error: 'Failed to initialize acquisition plan',
+      details: error?.message,
+    });
+  }
+}
+
+export async function stopAcquisitionPlan(_req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getPool();
+    stopAcquisitionPlanExecutor();
+    clearAllReservationTimers();
+    await pool.query('DELETE FROM acquisition_plan');
+    await pool.query('DELETE FROM acquisition_requests');
+    await pool.query(`UPDATE satellite_fleet SET status = 'active'`);
+    await broadcastCurrentRequestQueue();
+
+    res.status(200).json({
+      status: 'stopped',
+      data: [],
+      total: 0,
+    });
+  } catch (error: any) {
+    console.error('[Controller] Error stopping acquisition_plan:', error);
+    res.status(500).json({
+      error: 'Failed to stop acquisition plan',
       details: error?.message,
     });
   }

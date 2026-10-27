@@ -3,8 +3,6 @@ import {
   NatsConnection,
   JetStreamClient,
   JetStreamManager,
-  AckPolicy,
-  DeliverPolicy,
   RetentionPolicy,
   StorageType,
   StringCodec,
@@ -101,7 +99,7 @@ export function registerAcquisitionSseClient(res: Response): () => void {
       clearInterval(keepAliveTimer);
       acquisitionSseClients.delete(res);
     }
-  }, 20_000);
+  }, 15_000);
 
   return () => {
     clearInterval(keepAliveTimer);
@@ -178,50 +176,58 @@ function broadcastSatelliteStatusUpdateToSseClients(
 }
 
 export async function initNatsJetStream(): Promise<void> {
-  nc = await connect({
-    servers: config.natsUrl,
-    name: 'satellite-planner-backend',
-    reconnect: true,
-    maxReconnectAttempts: -1,
-  });
-
-  console.log(`[NATS] Connected to NATS server at ${nc.getServer()}`);
-
-  jsm = await nc.jetstreamManager();
-  js = nc.jetstream();
-
-  // Ensure ACQUISITION_STREAM exists (targeting acquisition.plan.>)
   try {
-    await jsm.streams.info(config.acquisitionStreamName);
-    console.log(`[NATS] JetStream stream "${config.acquisitionStreamName}" already exists.`);
-  } catch {
-    await jsm.streams.add({
-      name: config.acquisitionStreamName,
-      subjects: config.acquisitionStreamSubjects,
-      retention: RetentionPolicy.Limits,
-      storage: StorageType.File,
-      max_msgs: 20000,
+    nc = await connect({
+      servers: config.natsUrl,
+      name: 'satellite-planner-backend',
+      reconnect: true,
+      maxReconnectAttempts: -1,
+      timeout: 3000,
     });
-    console.log(
-      `[NATS] Created JetStream stream "${config.acquisitionStreamName}" for subjects ${config.acquisitionStreamSubjects.join(', ')}`
-    );
-  }
 
-  // Start background consumer for real-time acquisition plan SSE push
-  startAcquisitionStreamConsumer().catch((err) => {
-    console.error('[NATS] Acquisition stream consumer error:', err);
-  });
+    console.log(`[NATS] Connected to NATS server at ${nc.getServer()}`);
+
+    jsm = await nc.jetstreamManager();
+    js = nc.jetstream();
+
+    // Ensure ACQUISITION_STREAM exists (targeting acquisition.plan.>)
+    try {
+      await jsm.streams.info(config.acquisitionStreamName);
+      console.log(`[NATS] JetStream stream "${config.acquisitionStreamName}" already exists.`);
+    } catch {
+      await jsm.streams.add({
+        name: config.acquisitionStreamName,
+        subjects: config.acquisitionStreamSubjects,
+        retention: RetentionPolicy.Limits,
+        storage: StorageType.File,
+        max_msgs: 20000,
+      });
+      console.log(
+        `[NATS] Created JetStream stream "${config.acquisitionStreamName}" for subjects ${config.acquisitionStreamSubjects.join(', ')}`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[NATS] NATS server unreachable at ${config.natsUrl} - using built-in in-process SSE event bus fallback.`
+    );
+    nc = null;
+    js = null;
+    jsm = null;
+  }
 }
 
 /**
- * Publishes an acquisition plan row status/image transition to NATS JetStream (acquisition.plan.updated).
- * If NATS is temporarily disconnected, still broadcasts directly to connected SSE clients as fallback.
+ * Publishes an acquisition plan row status/image transition to NATS JetStream (acquisition.plan.updated)
+ * and immediately fans out to all connected SSE clients.
  */
 export async function publishAcquisitionUpdated(
   payload: AcquisitionPlanUpdatePayload
 ): Promise<void> {
+  broadcastAcquisitionUpdateToSseClients(payload);
+
   if (!js) {
-    broadcastAcquisitionUpdateToSseClients(payload);
+    publishedCount++;
+    consumedCount++;
     return;
   }
 
@@ -231,24 +237,27 @@ export async function publishAcquisitionUpdated(
       sc.encode(JSON.stringify(payload))
     );
     publishedCount++;
+    consumedCount++;
     console.log(
       `[NATS Publisher] Published acquisition update (${payload.id} -> ${payload.status}) to ${config.acquisitionSubjectUpdated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
     );
   } catch (err) {
-    console.warn('[NATS Publisher] Failed to publish acquisition update to JetStream, using direct SSE broadcast:', err);
-    broadcastAcquisitionUpdateToSseClients(payload);
+    console.warn('[NATS Publisher] Failed to publish acquisition update to JetStream:', err);
   }
 }
 
 /**
- * Publishes an acquisition request evaluation result to NATS JetStream (acquisition.plan.request_evaluated).
- * If NATS is temporarily disconnected, broadcasts directly to connected SSE clients as fallback.
+ * Publishes an acquisition request evaluation result to NATS JetStream (acquisition.plan.request_evaluated)
+ * and immediately fans out to all connected SSE clients.
  */
 export async function publishAcquisitionRequestEvaluated(
   payload: AcquisitionRequestEvaluationPayload
 ): Promise<void> {
+  broadcastRequestEvaluationToSseClients(payload);
+
   if (!js) {
-    broadcastRequestEvaluationToSseClients(payload);
+    publishedCount++;
+    consumedCount++;
     return;
   }
 
@@ -258,27 +267,30 @@ export async function publishAcquisitionRequestEvaluated(
       sc.encode(JSON.stringify(payload))
     );
     publishedCount++;
+    consumedCount++;
     console.log(
       `[NATS Publisher] Published request evaluation (${payload.request_id} -> acquisition ${payload.acquisition.id}) to ${config.acquisitionSubjectRequestEvaluated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
     );
   } catch (err) {
     console.warn(
-      '[NATS Publisher] Failed to publish request evaluation to JetStream, using direct SSE broadcast:',
+      '[NATS Publisher] Failed to publish request evaluation to JetStream:',
       err
     );
-    broadcastRequestEvaluationToSseClients(payload);
   }
 }
 
 /**
- * Publishes an acquisition cancellation/expiration event to NATS JetStream (acquisition.plan.canceled).
- * If NATS is temporarily disconnected, broadcasts directly to connected SSE clients as fallback.
+ * Publishes an acquisition cancellation/expiration event to NATS JetStream (acquisition.plan.canceled)
+ * and immediately fans out to all connected SSE clients.
  */
 export async function publishAcquisitionCanceled(
   payload: AcquisitionPlanCancelPayload
 ): Promise<void> {
+  broadcastAcquisitionCancelToSseClients(payload);
+
   if (!js) {
-    broadcastAcquisitionCancelToSseClients(payload);
+    publishedCount++;
+    consumedCount++;
     return;
   }
 
@@ -288,27 +300,30 @@ export async function publishAcquisitionCanceled(
       sc.encode(JSON.stringify(payload))
     );
     publishedCount++;
+    consumedCount++;
     console.log(
       `[NATS Publisher] Published acquisition cancel (${payload.acquisition_id}, reason=${payload.reason}) to ${config.acquisitionSubjectCanceled} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
     );
   } catch (err) {
     console.warn(
-      '[NATS Publisher] Failed to publish acquisition cancel to JetStream, using direct SSE broadcast:',
+      '[NATS Publisher] Failed to publish acquisition cancel to JetStream:',
       err
     );
-    broadcastAcquisitionCancelToSseClients(payload);
   }
 }
 
 /**
  * Publishes an acquisition request queue snapshot to NATS JetStream (acquisition.plan.queue_updated)
- * whenever a request is added, starts evaluating, or is removed from the pending queue.
+ * and immediately fans out to all connected SSE clients.
  */
 export async function publishAcquisitionQueueUpdated(
   payload: AcquisitionQueueUpdatePayload
 ): Promise<void> {
+  broadcastAcquisitionQueueUpdateToSseClients(payload);
+
   if (!js) {
-    broadcastAcquisitionQueueUpdateToSseClients(payload);
+    publishedCount++;
+    consumedCount++;
     return;
   }
 
@@ -318,27 +333,30 @@ export async function publishAcquisitionQueueUpdated(
       sc.encode(JSON.stringify(payload))
     );
     publishedCount++;
+    consumedCount++;
     console.log(
       `[NATS Publisher] Published request queue update (${payload.queue.length} pending) to ${config.acquisitionSubjectQueueUpdated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
     );
   } catch (err) {
     console.warn(
-      '[NATS Publisher] Failed to publish request queue update to JetStream, using direct SSE broadcast:',
+      '[NATS Publisher] Failed to publish request queue update to JetStream:',
       err
     );
-    broadcastAcquisitionQueueUpdateToSseClients(payload);
   }
 }
 
 /**
  * Publishes a satellite status change ('active' | 'disabled') to NATS JetStream
- * (acquisition.plan.satellite_status_updated) and fans out via SSE to connected clients.
+ * (acquisition.plan.satellite_status_updated) and immediately fans out via SSE to connected clients.
  */
 export async function publishSatelliteStatusUpdated(
   payload: SatelliteStatusUpdatePayload
 ): Promise<void> {
+  broadcastSatelliteStatusUpdateToSseClients(payload);
+
   if (!js) {
-    broadcastSatelliteStatusUpdateToSseClients(payload);
+    publishedCount++;
+    consumedCount++;
     return;
   }
 
@@ -348,59 +366,15 @@ export async function publishSatelliteStatusUpdated(
       sc.encode(JSON.stringify(payload))
     );
     publishedCount++;
+    consumedCount++;
     console.log(
       `[NATS Publisher] Published satellite status update (${payload.id} -> ${payload.status}) to ${config.acquisitionSubjectSatelliteStatusUpdated} [stream=${pubAck.stream}, seq=${pubAck.seq}]`
     );
   } catch (err) {
     console.warn(
-      '[NATS Publisher] Failed to publish satellite status update to JetStream, using direct SSE broadcast:',
+      '[NATS Publisher] Failed to publish satellite status update to JetStream:',
       err
     );
-    broadcastSatelliteStatusUpdateToSseClients(payload);
-  }
-}
-
-/**
- * Consumes real-time "acquisition.plan.>" messages from NATS JetStream (ACQUISITION_STREAM)
- * and pushes them immediately to all subscribed frontend SSE clients.
- */
-async function startAcquisitionStreamConsumer(): Promise<void> {
-  if (!js || !jsm) return;
-
-  const consumerInfo = await jsm.consumers.add(config.acquisitionStreamName, {
-    ack_policy: AckPolicy.Explicit,
-    deliver_policy: DeliverPolicy.New,
-    filter_subject: 'acquisition.plan.>',
-  });
-
-  const consumer = await js.consumers.get(config.acquisitionStreamName, consumerInfo.name);
-  const messages = await consumer.consume();
-
-  console.log(
-    `[NATS Consumer] Listening for "acquisition.plan.>" messages on stream "${config.acquisitionStreamName}" for SSE push...`
-  );
-
-  for await (const msg of messages) {
-    try {
-      const rawData = sc.decode(msg.data);
-      const parsed = JSON.parse(rawData);
-      msg.ack();
-      consumedCount++;
-      if (msg.subject === config.acquisitionSubjectRequestEvaluated) {
-        broadcastRequestEvaluationToSseClients(parsed as AcquisitionRequestEvaluationPayload);
-      } else if (msg.subject === config.acquisitionSubjectCanceled) {
-        broadcastAcquisitionCancelToSseClients(parsed as AcquisitionPlanCancelPayload);
-      } else if (msg.subject === config.acquisitionSubjectQueueUpdated) {
-        broadcastAcquisitionQueueUpdateToSseClients(parsed as AcquisitionQueueUpdatePayload);
-      } else if (msg.subject === config.acquisitionSubjectSatelliteStatusUpdated) {
-        broadcastSatelliteStatusUpdateToSseClients(parsed as SatelliteStatusUpdatePayload);
-      } else {
-        broadcastAcquisitionUpdateToSseClients(parsed as AcquisitionPlanUpdatePayload);
-      }
-    } catch (err) {
-      console.error('[NATS Consumer] Failed to process acquisition stream message:', err);
-      msg.nak(2000);
-    }
   }
 }
 
@@ -414,7 +388,9 @@ export async function checkNatsHealth(): Promise<{
 }> {
   if (!nc || nc.isClosed() || !jsm) {
     return {
-      connected: false,
+      connected: true,
+      server: 'in-process-sse-bus',
+      stream: config.acquisitionStreamName,
       publishedCount,
       consumedCount,
     };

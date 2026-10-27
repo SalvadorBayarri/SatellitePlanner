@@ -114,6 +114,15 @@ export function startAcquisitionPlanExecutor(): void {
   void runExecutorStep(generation);
 }
 
+export function stopAcquisitionPlanExecutor(): void {
+  if (schedulerTimeout) {
+    clearTimeout(schedulerTimeout);
+    schedulerTimeout = null;
+  }
+  currentGeneration++;
+  console.log(`[AcquisitionExecutor] Stopped execution cycle (generation #${currentGeneration}).`);
+}
+
 async function runExecutorStep(generation: number): Promise<void> {
   if (generation !== currentGeneration) return;
 

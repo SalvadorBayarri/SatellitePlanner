@@ -8,6 +8,7 @@ import {
   getAcquisitionPlan,
   getAcquisitionById,
   initializeAcquisitionPlan,
+  stopAcquisitionPlan,
   streamAcquisitionPlanUpdates,
   getAcquisitionRequestsQueue,
   submitAcquisitionRequest,
@@ -30,6 +31,7 @@ router.post('/acquisition-plan/:id/cancel', cancelReservedAcquisition);
 router.post('/acquisition-plan/:id/fail', markAcquisitionAsFailed);
 router.get('/acquisition-plan/:id', getAcquisitionById);
 router.post('/acquisition-plan/init', initializeAcquisitionPlan);
+router.post('/acquisition-plan/stop', stopAcquisitionPlan);
 router.get('/acquisition-requests', getAcquisitionRequestsQueue);
 router.post('/acquisition-requests', submitAcquisitionRequest);
 
