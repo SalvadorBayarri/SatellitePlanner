@@ -26,6 +26,7 @@ import {
   Sparkles,
   Play,
   Square,
+  HelpCircle,
   X,
 } from 'lucide-react';
 import { GlobeVisualizer } from './components/GlobeVisualizer';
@@ -1221,6 +1222,17 @@ export function App() {
             <Globe2 size={15} />
             <span>{autoRotate ? 'Orbiting' : 'Paused'}</span>
           </button>
+
+          <a
+            href="/user-manual.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hud-btn help-manual-btn"
+            title="Open User Manual in a new browser tab"
+            aria-label="Open User Manual"
+          >
+            <HelpCircle size={16} />
+          </a>
         </div>
       </header>
 

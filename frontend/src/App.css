@@ -2452,6 +2452,25 @@ body,
   display: block;
 }
 
+/* Help (?) User Manual Button in Top Bar */
+.hud-btn.help-manual-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  padding: 6px 9px;
+  border-color: rgba(56, 189, 248, 0.48);
+  background: rgba(14, 116, 144, 0.25);
+  color: #7dd3fc;
+}
+
+.hud-btn.help-manual-btn:hover {
+  background: rgba(56, 189, 248, 0.32);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.35);
+}
+
 /* Start / End Plan Session Button in Top Bar */
 .hud-btn.plan-session-btn.stopped {
   border-color: rgba(16, 185, 129, 0.6);

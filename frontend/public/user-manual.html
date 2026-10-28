@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SatellitePlanner — User Manual &amp; Operations Guide</title>
+  <style>
+    :root {
+      --bg-deep: #050914;
+      --bg-panel: #0b1528;
+      --bg-card: #0f1d36;
+      --bg-code: #081020;
+      --border-subtle: rgba(56, 189, 248, 0.18);
+      --border-strong: rgba(56, 189, 248, 0.38);
+      --text-primary: #f1f5f9;
+      --text-secondary: #cbd5e1;
+      --text-muted: #94a3b8;
+      --accent-cyan: #22d3ee;
+      --accent-sky: #38bdf8;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --accent-violet: #a855f7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 84px;
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: radial-gradient(circle at 20% 0%, #0d1f3d 0%, var(--bg-deep) 55%);
+      color: var(--text-primary);
+      line-height: 1.65;
+    }
+
+    /* Top Sticky Header */
+    .manual-topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 28px;
+      background: rgba(8, 15, 30, 0.92);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .brand-badge {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: rgba(34, 211, 238, 0.12);
+      border: 1px solid rgba(34, 211, 238, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent-cyan);
+      font-weight: 800;
+      font-size: 16px;
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.7px;
+      margin: 0;
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--accent-sky);
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .topbar-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 600;
+      text-decoration: none;
+      color: #e0f2fe;
+      background: rgba(14, 116, 144, 0.28);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      transition: all 0.18s ease;
+    }
+
+    .topbar-link:hover {
+      background: rgba(14, 116, 144, 0.48);
+      border-color: var(--accent-cyan);
+      color: #ffffff;
+    }
+
+    /* Layout Container */
+    .manual-layout {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 28px 24px 80px;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 32px;
+      align-items: start;
+    }
+
+    @media (max-width: 980px) {
+      .manual-layout {
+        grid-template-columns: 1fr;
+      }
+      .toc-sidebar {
+        position: static !important;
+      }
+    }
+
+    /* Sticky Table of Contents Sidebar */
+    .toc-sidebar {
+      position: sticky;
+      top: 84px;
+      background: rgba(11, 21, 40, 0.88);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 18px 16px;
+      max-height: calc(100vh - 110px);
+      overflow-y: auto;
+    }
+
+    .toc-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent-cyan);
+      margin: 0 0 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .toc-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .toc-list a {
+      display: block;
+      padding: 6px 10px;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+      border-left: 2px solid transparent;
+    }
+
+    .toc-list a:hover,
+    .toc-list a.active {
+      color: #ffffff;
+      background: rgba(56, 189, 248, 0.12);
+      border-left-color: var(--accent-cyan);
+    }
+
+    .toc-sublist {
+      list-style: none;
+      padding: 2px 0 4px 14px;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .toc-sublist a {
+      font-size: 12px;
+      padding: 4px 8px;
+      color: var(--text-muted);
+    }
+
+    /* Main Content Area */
+    .manual-content {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    .hero-banner {
+      background: linear-gradient(135deg, rgba(15, 29, 54, 0.95), rgba(8, 18, 38, 0.95));
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      padding: 28px 32px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    .hero-kicker {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+      background: rgba(34, 211, 238, 0.12);
+      border: 1px solid rgba(34, 211, 238, 0.35);
+      margin-bottom: 10px;
+    }
+
+    .hero-banner h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.3px;
+    }
+
+    .hero-banner p {
+      margin: 0 0 18px;
+      color: var(--text-secondary);
+      font-size: 15px;
+      max-width: 860px;
+    }
+
+    .quick-links-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .quick-card {
+      display: block;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      text-decoration: none;
+      color: var(--text-primary);
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+
+    .quick-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent-cyan);
+      background: rgba(14, 116, 144, 0.18);
+    }
+
+    .quick-card strong {
+      display: block;
+      font-size: 13.5px;
+      color: var(--accent-sky);
+      margin-bottom: 3px;
+    }
+
+    .quick-card span {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Manual Section Cards */
+    .manual-section {
+      background: rgba(11, 21, 40, 0.85);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 28px 32px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+    }
+
+    .section-header h2 {
+      margin: 0;
+      font-size: 21px;
+      font-weight: 800;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--accent-cyan);
+      background: rgba(34, 211, 238, 0.14);
+      border: 1px solid rgba(34, 211, 238, 0.35);
+    }
+
+    .back-to-top {
+      font-size: 12px;
+      color: var(--accent-sky);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .back-to-top:hover {
+      text-decoration: underline;
+    }
+
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 16.5px;
+      font-weight: 700;
+      color: #e0f2fe;
+    }
+
+    p {
+      margin: 0 0 12px;
+      color: var(--text-secondary);
+      font-size: 14.5px;
+    }
+
+    a.internal-link {
+      color: var(--accent-cyan);
+      text-decoration: none;
+      font-weight: 600;
+      border-bottom: 1px dashed rgba(34, 211, 238, 0.45);
+    }
+
+    a.internal-link:hover {
+      color: #ffffff;
+      border-bottom-style: solid;
+    }
+
+    /* Figures & Images */
+    figure.manual-figure {
+      margin: 20px 0;
+      background: var(--bg-code);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 12px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    figure.manual-figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+
+    figure.manual-figure figcaption {
+      margin-top: 10px;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    /* Feature Grid & Callouts */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin: 14px 0;
+    }
+
+    .feature-box {
+      background: var(--bg-card);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .feature-box h4 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .feature-box p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .callout {
+      padding: 14px 18px;
+      border-radius: 10px;
+      margin: 16px 0;
+      font-size: 13.5px;
+      color: var(--text-secondary);
+      background: rgba(14, 116, 144, 0.14);
+      border-left: 4px solid var(--accent-cyan);
+    }
+
+    .callout.emerald {
+      background: rgba(6, 78, 59, 0.22);
+      border-left-color: var(--accent-emerald);
+    }
+
+    .callout.amber {
+      background: rgba(120, 53, 15, 0.22);
+      border-left-color: var(--accent-amber);
+    }
+
+    .callout strong {
+      color: #f8fafc;
+    }
+
+    /* Status Badges */
+    .badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-reserved { background: rgba(37, 99, 235, 0.25); color: #93c5fd; border: 1px solid #60a5fa; }
+    .badge-pending { background: rgba(14, 116, 144, 0.28); color: #67e8f9; border: 1px solid #22d3ee; }
+    .badge-acquiring { background: rgba(180, 83, 9, 0.3); color: #fde68a; border: 1px solid #f59e0b; }
+    .badge-completed { background: rgba(6, 95, 70, 0.35); color: #6ee7b7; border: 1px solid #10b981; }
+    .badge-failed { background: rgba(153, 27, 27, 0.35); color: #fca5a5; border: 1px solid #ef4444; }
+    .badge-reprogrammed { background: rgba(107, 33, 168, 0.35); color: #e9d5ff; border: 1px solid #a855f7; }
+
+    /* Reference Table */
+    .manual-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 13.5px;
+    }
+
+    .manual-table th,
+    .manual-table td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .manual-table th {
+      background: rgba(15, 29, 54, 0.9);
+      color: var(--accent-sky);
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    ul.manual-list, ol.manual-list {
+      margin: 8px 0 14px;
+      padding-left: 22px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    ul.manual-list li, ol.manual-list li {
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body id="top">
+
+  <!-- Sticky Top Bar -->
+  <header class="manual-topbar">
+    <a href="#top" class="brand-group">
+      <div class="brand-badge">?</div>
+      <div>
+        <p class="brand-title">SATELLITE PLANNER — USER MANUAL</p>
+        <p class="brand-subtitle">3D Polar Constellation Mission Planning &amp; Real-Time Execution Guide</p>
+      </div>
+    </a>
+    <div class="topbar-actions">
+      <a href="#glossary" class="topbar-link">Status Glossary</a>
+      <a href="./" class="topbar-link">← Return to Application</a>
+    </div>
+  </header>
+
+  <div class="manual-layout">
+    <!-- Left Sticky Table of Contents -->
+    <aside class="toc-sidebar" aria-label="User Manual Table of Contents">
+      <h2 class="toc-title">Contents</h2>
+      <ul class="toc-list">
+        <li><a href="#overview">1. Overview &amp; Constellation</a></li>
+        <li>
+          <a href="#top-bar">2. Top HUD Control Bar</a>
+          <ul class="toc-sublist">
+            <li><a href="#session-control">Start / End Plan Session</a></li>
+            <li><a href="#quick-jump">Next Acquisition Stepper</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#globe-and-time">3. 3D Globe &amp; Time Controls</a>
+          <ul class="toc-sublist">
+            <li><a href="#globe-markers">3D Footprints &amp; Halos</a></li>
+            <li><a href="#time-controls">Orbital Time &amp; Speed</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#satellite-panel">4. Satellite Info Panel</a>
+          <ul class="toc-sublist">
+            <li><a href="#satellite-status-toggle">Active / Disabled Toggle</a></li>
+            <li><a href="#satellite-imagery">Captured Imagery Preview</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#acquisition-plan">5. Global Acquisition Plan</a>
+          <ul class="toc-sublist">
+            <li><a href="#list-view">List View &amp; Actions</a></li>
+            <li><a href="#timeline-view">Timeline Gantt View</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#image-requests">6. Image Requests &amp; Queue</a>
+          <ul class="toc-sublist">
+            <li><a href="#single-request">Request Image Dialog</a></li>
+            <li><a href="#batch-requests">Batch Requests Generator</a></li>
+            <li><a href="#requests-queue">Requests Queue Monitor</a></li>
+            <li><a href="#reprogramming">Reprogramming Workflows</a></li>
+          </ul>
+        </li>
+        <li><a href="#statistics">7. Real-Time Statistics</a></li>
+        <li><a href="#glossary">8. Status &amp; Controls Reference</a></li>
+      </ul>
+    </aside>
+
+    <!-- Main Documentation Body -->
+    <main class="manual-content">
+
+      <!-- Hero Banner -->
+      <section class="hero-banner">
+        <span class="hero-kicker">Interactive Operations Guide</span>
+        <h1>SatellitePlanner User Manual</h1>
+        <p>
+          <strong>SatellitePlanner</strong> is a full-stack 3D satellite constellation mission planning and real-time image acquisition platform. It simulates a <strong>30-satellite polar constellation</strong> (<code>SAT-POLAR-01</code> through <code>SAT-POLAR-30</code>) with orbital pass evaluation, automated image capture, fault handling, and real-time Server-Sent Events (SSE) notifications backed by PostgreSQL and NATS JetStream.
+        </p>
+
+        <div class="quick-links-grid">
+          <a href="#session-control" class="quick-card">
+            <strong>▶ Start / ■ End Session</strong>
+            <span>Initialize a 30-minute acquisition plan or stop background execution.</span>
+          </a>
+          <a href="#image-requests" class="quick-card">
+            <strong>📷 Request Satellite Imagery</strong>
+            <span>Pick coordinates on the 3D globe, choose ASAP or UTC time, and enqueue.</span>
+          </a>
+          <a href="#satellite-status-toggle" class="quick-card">
+            <strong>🛰️ Fleet Faults &amp; Recovery</strong>
+            <span>Disable or reactivate satellites with automatic pass reprogramming.</span>
+          </a>
+          <a href="#timeline-view" class="quick-card">
+            <strong>📊 Timeline &amp; Live Analytics</strong>
+            <span>Inspect the Gantt timeline, zoom slider, and real-time status charts.</span>
+          </a>
+        </div>
+      </section>
+
+      <!-- Section 1: Overview -->
+      <section id="overview" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">1</span> Overview &amp; Polar Constellation Model</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          The constellation consists of <strong>30 polar-orbiting Earth observation satellites</strong> evenly spaced every <strong>6° of orbital plane longitude</strong> (from <code>-90°</code> to <code>+84°</code>). Each satellite completes a full polar orbit every <strong>97 minutes</strong> and projects a <strong>300 km × 300 km</strong> ground swath footprint onto the Earth's surface.
+        </p>
+        <div class="feature-grid">
+          <div class="feature-box">
+            <h4>🌍 Real-Time 3D Propagation</h4>
+            <p>
+              Both the WebGL 3D Globe and the backend pass evaluator propagate satellite sub-points synchronously, accounting for Earth rotation (<code>24.5°</code> per orbit) and pole crossings. See <a href="#globe-and-time" class="internal-link">Section 3: 3D Globe &amp; Time Controls</a>.
+            </p>
+          </div>
+          <div class="feature-box">
+            <h4>⚡ Event-Driven Execution</h4>
+            <p>
+              An event-driven backend executor transitions scheduled acquisitions from <span class="badge badge-pending">Pending</span> to <span class="badge badge-acquiring">Acquiring</span> and <span class="badge badge-completed">Completed</span> (or <span class="badge badge-failed">Failed</span>), streaming updates immediately to your browser.
+            </p>
+          </div>
+          <div class="feature-box">
+            <h4>🔄 Resilient Reprogramming</h4>
+            <p>
+              Failed acquisitions or acquisitions belonging to a disabled satellite can be reprogrammed manually or automatically onto the next earliest feasible pass. See <a href="#reprogramming" class="internal-link">Reprogramming Workflows</a>.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Top HUD Bar -->
+      <section id="top-bar" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">2</span> Top HUD Navigation &amp; Control Bar</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          The top Heads-Up Display (HUD) bar provides one-click access to session initialization, image request tools, statistical charts, the global acquisition plan, and chronological target navigation.
+        </p>
+
+        <figure class="manual-figure">
+          <img src="./manual/fig1-top-hud-bar.svg" alt="Annotated diagram of the Top HUD Control Bar in SatellitePlanner" />
+          <figcaption>Figure 1 — Top HUD Control Bar: (1) Fleet &amp; Health Pills, (2) Start/End Session Button, (3) Image Requests Dropdown, (4) Stats Dropdown, (5) Global Plan Button, (6) Chronological Acquisition Stepper, and (7) Globe Spin &amp; Help.</figcaption>
+        </figure>
+
+        <h3 id="session-control">2.1 Starting &amp; Ending an Acquisition Plan Session (<code>▶ Start</code> / <code>■ End</code>)</h3>
+        <p>
+          To support on-demand cloud deployments (such as Google Cloud Run scaling to zero when idle), the application starts in an <strong>idle state</strong> when you first open the page:
+        </p>
+        <ul class="manual-list">
+          <li>
+            <strong><code>▶ Start</code> Button (Green)</strong>: Generates a fresh <strong>30-minute Global Acquisition Plan</strong> across the 30 polar satellites, resets all satellites to <code>ACTIVE</code>, starts the background acquisition executor, and switches the button to <strong><code>■ End</code></strong>.
+          </li>
+          <li>
+            <strong><code>■ End</code> Button (Red)</strong>: Immediately stops all background execution and reservation timers on the server, clears the current acquisition plan and request queue, and returns the application to idle mode.
+          </li>
+        </ul>
+
+        <h3 id="quick-jump">2.2 Top Bar Controls Summary</h3>
+        <ul class="manual-list">
+          <li>
+            <strong>Fleet Pill (🛰️ Icon)</strong>: Displays constellation availability and opens the <a href="#satellite-panel" class="internal-link">Satellite Information Panel</a> if closed.
+          </li>
+          <li>
+            <strong>System Health Pill (📈 Icon)</strong>: Glows emerald when the Backend REST API, PostgreSQL database, and NATS JetStream stream are online.
+          </li>
+          <li>
+            <strong><code>Image Requests ▾</code> Menu</strong>: Opens the <a href="#single-request" class="internal-link">Request Image</a> dialog, <a href="#batch-requests" class="internal-link">Batch Requests</a> generator, or <a href="#requests-queue" class="internal-link">Requests Queue</a> monitor (with a live badge count of pending requests).
+          </li>
+          <li>
+            <strong><code>Stats ▾</code> Menu</strong>: Opens the <a href="#statistics" class="internal-link">Status Distribution</a> bar chart or the <a href="#statistics" class="internal-link">Completed vs Failed / Reprogrammed</a> time-series chart.
+          </li>
+          <li>
+            <strong><code>See Acquisition Plan</code></strong>: Toggles the floating <a href="#acquisition-plan" class="internal-link">Global Acquisition Plan</a> window.
+          </li>
+          <li>
+            <strong><code>‹</code> | <code>Next Acquisition</code> | <code>›</code></strong>:
+            Clicking <strong><code>Next Acquisition</code></strong> finds the scheduled acquisition closest to the current real UTC time, selects its satellite in the <a href="#satellite-panel" class="internal-link">Satellite Information Panel</a>, and smoothly rotates the 3D Globe camera to center on its target footprint. Use <strong><code>‹</code></strong> and <strong><code>›</code></strong> to step backward or forward through the global plan in chronological order.
+          </li>
+          <li>
+            <strong><code>Orbiting</code> / <code>Paused</code></strong>: Toggles gentle camera auto-rotation around the 3D Earth globe.
+          </li>
+          <li>
+            <strong><code>?</code> (Help Button)</strong>: Opens this HTML User Manual in a new browser tab.
+          </li>
+        </ul>
+      </section>
+
+      <!-- Section 3: 3D Globe & Time Controls -->
+      <section id="globe-and-time" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">3</span> 3D Globe Visualization &amp; Time Simulation Controls</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          The central viewport renders a hardware-accelerated 3D Earth globe with realistic day/night solar terminator shading, atmospheric glow, polar orbit trajectories, live satellite footprints, and scheduled target zones.
+        </p>
+
+        <figure class="manual-figure">
+          <img src="./manual/fig2-globe-3d-view.svg" alt="Annotated illustration of the 3D Earth Globe, Satellite Information Panel, and Orbital Time Control Panel" />
+          <figcaption>Figure 2 — 3D Globe Workspace showing the Satellite Information Panel (left), active polar orbit track &amp; 300×300 km ground footprints (center), and Orbital Time &amp; Simulation Speed controller (bottom-right).</figcaption>
+        </figure>
+
+        <h3 id="globe-markers">3.1 Interactive 3D Elements on the Globe</h3>
+        <ul class="manual-list">
+          <li>
+            <strong>Camera Navigation</strong>: Left-click + drag to rotate the globe, scroll the mouse wheel to zoom in/out, and right-click + drag to pan.
+          </li>
+          <li>
+            <strong>Satellite Markers &amp; Ground Swaths</strong>: Each satellite is rendered at its orbital altitude with a projected <strong>300 km × 300 km</strong> ground footprint. Selecting a satellite highlights its full 360° polar orbit ring and live footprint. Disabled satellites are distinctly colored red so you can identify offline spacecraft at a glance.
+          </li>
+          <li>
+            <strong>Scheduled Target Footprints &amp; Pulsing Halo</strong>: Acquisitions belonging to the currently selected satellite are drawn on the Earth's surface and color-coded by status (<span class="badge badge-reserved">Reserved</span>, <span class="badge badge-pending">Pending</span>, <span class="badge badge-acquiring">Acquiring</span>, <span class="badge badge-completed">Completed</span>, <span class="badge badge-failed">Failed</span>). Note that <span class="badge badge-reprogrammed">Reprogrammed</span> entries are intentionally hidden on the 3D globe to prevent visual overlap with their newly scheduled replacement pass.
+          </li>
+        </ul>
+
+        <h3 id="time-controls">3.2 Orbital Time &amp; Simulation Speed Panel</h3>
+        <p>
+          Located in the bottom-right corner, the draggable <strong>Orbital Time &amp; Simulation Speed</strong> panel lets you inspect satellite positions at any point in time:
+        </p>
+        <ul class="manual-list">
+          <li>
+            <strong><code>LIVE</code> vs <code>SIMULATED</code> Badge</strong>: Indicates whether the 3D globe is locked to real-world UTC time or running at an accelerated simulation speed.
+          </li>
+          <li>
+            <strong>Simulation Speed Slider (<code>1×</code> – <code>120×</code>)</strong>: Accelerate orbital motion up to <code>120×</code> to preview upcoming polar passes and solar terminator movement.
+          </li>
+          <li>
+            <strong><code>Reset to Real Time (UTC)</code></strong>: Immediately snaps the simulation clock and speed multiplier back to real-time UTC (<code>1×</code>).
+          </li>
+        </ul>
+      </section>
+
+      <!-- Section 4: Satellite Information Panel -->
+      <section id="satellite-panel" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">4</span> Satellite Information Panel &amp; Fleet Status Management</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          Clicking any satellite on the 3D globe, clicking the top-bar Fleet pill, or clicking a satellite ID in the <a href="#acquisition-plan" class="internal-link">Global Acquisition Plan</a> opens the draggable <strong>Satellite Information Panel</strong> on the left side of the screen.
+        </p>
+
+        <h3 id="satellite-status-toggle">4.1 Enabling &amp; Disabling Satellites (Automatic Fleet Reprogramming)</h3>
+        <p>
+          Next to the satellite selector dropdown is an interactive status button showing either <strong><code>ACTIVE</code></strong> (green) or <strong><code>DISABLED</code></strong> (red). Clicking this button opens a confirmation modal that explains the operational impact before applying the change:
+        </p>
+        <div class="callout emerald">
+          <strong>Disabling an Active Satellite (Fault Simulation):</strong><br />
+          When you confirm disabling an active satellite, its status changes to <code>DISABLED</code> and the backend automatically enqueues <strong>ASAP Reprogramming Requests</strong> (with <code>Auto</code> confirmation) for all of its <span class="badge badge-pending">Pending</span> and <span class="badge badge-reserved">Reserved</span> acquisitions onto the remaining active satellites in the fleet.
+        </div>
+        <div class="callout">
+          <strong>Reactivating a Disabled Satellite (Fleet Optimization):</strong><br />
+          When you reactivate a disabled satellite, the backend automatically evaluates all currently <span class="badge badge-pending">Pending</span> acquisitions across the entire constellation. Any acquisition that the reactivated satellite can capture at an <strong>earlier UTC timestamp</strong> is automatically reassigned to it!
+        </div>
+
+        <h3 id="satellite-imagery">4.2 Per-Satellite Acquisitions &amp; Captured Imagery Preview</h3>
+        <p>
+          The bottom half of the Satellite Information Panel lists all acquisitions assigned to the selected satellite:
+        </p>
+        <ul class="manual-list">
+          <li>
+            <strong>Inspecting a Target on the Globe</strong>: Clicking any row in the satellite's acquisition list highlights that acquisition, rotates the 3D globe to center on its target coordinates, and displays a pulsing target halo.
+          </li>
+          <li>
+            <strong>Acquired Satellite Image (<code>256×256</code>)</strong>: When an acquisition finishes with status <span class="badge badge-completed">Completed</span>, the panel displays the captured <code>256×256</code> satellite image alongside target coordinates and metadata.
+          </li>
+          <li>
+            <strong>Simulating Image Quality Failure (<code>Fail</code> Button)</strong>: On any <span class="badge badge-completed">Completed</span> acquisition, you can click <strong><code>Fail</code></strong> to mark the capture as unusable (e.g., due to cloud cover or sensor artifacts). This transitions the acquisition to <span class="badge badge-failed">Failed</span> and clears its stored image so it can be <a href="#reprogramming" class="internal-link">reprogrammed</a>.
+          </li>
+        </ul>
+      </section>
+
+      <!-- Section 5: Global Acquisition Plan -->
+      <section id="acquisition-plan" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">5</span> Global Acquisition Plan (<code>List</code> &amp; <code>Timeline</code> Views)</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          Clicking <strong><code>See Acquisition Plan</code></strong> in the <a href="#top-bar" class="internal-link">Top HUD Bar</a> opens the floating <strong>Global Acquisition Plan</strong> window. You can filter the plan by user (<code>All Users</code>, <code>system</code>, or <code>demo</code>) and switch seamlessly between <strong><code>List</code></strong> view and <strong><code>Timeline</code></strong> view.
+        </p>
+
+        <figure class="manual-figure">
+          <img src="./manual/fig3-acquisition-plan-timeline.svg" alt="Diagram of the Global Acquisition Plan window in Timeline view with zoom slider and status blocks" />
+          <figcaption>Figure 3 — Global Acquisition Plan in Timeline View showing per-satellite rows, color-coded acquisition blocks, the live NOW marker, Zoom slider (1×–8×), and harmonized dark-blue scroll sliders.</figcaption>
+        </figure>
+
+        <h3 id="list-view">5.1 List View &amp; Row Actions</h3>
+        <p>
+          In <strong><code>List</code></strong> mode, acquisitions are displayed in chronological UTC order with the following interactive controls:
+        </p>
+        <ul class="manual-list">
+          <li>
+            <strong>Row Selection</strong>: Clicking any row selects that satellite and acquisition in the <a href="#satellite-panel" class="internal-link">Satellite Information Panel</a> and flies the 3D camera to the target location.
+          </li>
+          <li>
+            <strong><code>Confirm</code> / <code>Cancel</code> (on <span class="badge badge-reserved">Reserved</span> rows)</strong>: Manually confirm a reserved pass to transition it to <span class="badge badge-pending">Pending</span>, or cancel it to release the slot.
+          </li>
+          <li>
+            <strong><code>Fail</code> (on <span class="badge badge-completed">Completed</span> rows)</strong>: Marks a completed capture as <span class="badge badge-failed">Failed</span>.
+          </li>
+          <li>
+            <strong><code>Reprogram</code> (on <span class="badge badge-failed">Failed</span> rows)</strong>: Opens the <a href="#reprogramming" class="internal-link">Reprogram Image Request</a> dialog pre-populated with the failed acquisition's target coordinates and footprint dimensions.
+          </li>
+        </ul>
+
+        <h3 id="timeline-view">5.2 Interactive Gantt Timeline View</h3>
+        <p>
+          Switching to <strong><code>Timeline</code></strong> mode renders a two-dimensional Gantt chart across the 30-minute planning horizon:
+        </p>
+        <ul class="manual-list">
+          <li>
+            <strong>Satellite Tracks (Vertical Axis)</strong>: Lists every satellite holding scheduled acquisitions (with disabled satellites clearly badged).
+          </li>
+          <li>
+            <strong>Time Horizon &amp; Live <code>NOW</code> Indicator (Horizontal Axis)</strong>: Plots each acquisition block according to its UTC start/end window and status color, intersected by a live red <strong><code>NOW</code></strong> cursor.
+          </li>
+          <li>
+            <strong>Horizontal Zoom Slider (<code>1×</code> – <code>8×</code>) &amp; Panning</strong>: Use the <strong>Zoom</strong> slider in the header to expand dense clusters of acquisitions and scroll horizontally/vertically using the low-contrast dark-blue scrollbars.
+          </li>
+        </ul>
+      </section>
+
+      <!-- Section 6: Image Requests & Reprogramming -->
+      <section id="image-requests" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">6</span> Requesting Satellite Imagery &amp; Reprogramming Workflows</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          All new image tasking and reprogramming flows are accessed from the <strong><code>Image Requests ▾</code></strong> menu in the <a href="#top-bar" class="internal-link">Top HUD Bar</a> or from the <strong><code>Reprogram</code></strong> button on a <span class="badge badge-failed">Failed</span> acquisition.
+        </p>
+
+        <figure class="manual-figure">
+          <img src="./manual/fig4-request-lifecycle.svg" alt="Diagram of the Acquisition Request and Execution Lifecycle from Queued to Completed or Reprogrammed" />
+          <figcaption>Figure 4 — End-to-End Lifecycle of an Acquisition Request: Queued → Evaluating (10s orbital feasibility search) → Reserved (Manual) or Pending (Auto) → Acquiring → Completed (90%) or Failed (10%) → Reprogrammed.</figcaption>
+        </figure>
+
+        <h3 id="single-request">6.1 Submitting an Individual Image Request (<code>Request Image</code>)</h3>
+        <ol class="manual-list">
+          <li>
+            <strong>Target Location &amp; Footprint Size</strong>: Enter <strong>Latitude</strong> (<code>-90°</code> to <code>90°</code>) and <strong>Longitude</strong> (<code>-180°</code> to <code>180°</code>) manually, or click <strong><code>Pick on Globe</code></strong> and click directly on any point on the 3D Earth to populate the coordinates automatically. Specify the target <strong>Width (m)</strong> and <strong>Height (m)</strong>.
+          </li>
+          <li>
+            <strong>Time Constraint (<code>ASAP</code> vs <code>Time</code>)</strong>:
+            Choose <strong><code>ASAP</code></strong> to let the orbital scheduler find the earliest pass across all active satellites, or choose <strong><code>Time</code></strong> to request a specific UTC timestamp.
+          </li>
+          <li>
+            <strong>Confirmation Mode (<code>Manual</code> vs <code>Auto</code>)</strong>:
+            <ul class="manual-list">
+              <li>
+                <strong><code>Manual</code></strong>: After the 10-second orbital evaluation finishes, the pass is inserted as <span class="badge badge-reserved">Reserved</span> and a <strong>Confirmation Dialog</strong> pops up showing the assigned satellite, feasible UTC time, whether time constraints were met, and estimated cost points. You have <strong>60 seconds</strong> to click <strong>Confirm</strong> (transitioning it to <span class="badge badge-pending">Pending</span>) before the reservation expires automatically.
+              </li>
+              <li>
+                <strong><code>Auto</code></strong>: Immediately schedules the evaluated pass as <span class="badge badge-pending">Pending</span> without requiring manual confirmation and displays a summary toast notification.
+              </li>
+            </ul>
+          </li>
+        </ol>
+
+        <h3 id="batch-requests">6.2 Generating Batch Requests (<code>Batch Requests</code>)</h3>
+        <p>
+          Open <strong><code>Image Requests ▾ → Batch Requests</code></strong> to enqueue between <strong>1 and 50</strong> randomized land-target acquisition requests at once. All batch requests use <code>Auto</code> confirmation mode and are processed sequentially by the backend request queue evaluator.
+        </p>
+
+        <h3 id="requests-queue">6.3 Monitoring the Requests Queue (<code>Requests Queue</code>)</h3>
+        <p>
+          Open <strong><code>Image Requests ▾ → Requests Queue</code></strong> to watch pending requests in real time as they move from <code>Queued</code> to <code>Evaluating</code> (10-second orbital pass calculation per request) before being added to the <a href="#acquisition-plan" class="internal-link">Global Acquisition Plan</a>.
+        </p>
+
+        <h3 id="reprogramming">6.4 Manual &amp; Automatic Reprogramming</h3>
+        <p>
+          When an acquisition fails (either during the 10% simulated capture failure rate or when manually marked as <span class="badge badge-failed">Failed</span>), clicking its <strong><code>Reprogram</code></strong> button opens the <strong>Reprogram Image Request</strong> dialog:
+        </p>
+        <ul class="manual-list">
+          <li>
+            The target Latitude, Longitude, Width, and Height are locked to match the original failed acquisition, while allowing you to choose <code>ASAP</code> or a new target UTC time and <code>Manual</code> or <code>Auto</code> confirmation.
+          </li>
+          <li>
+            As soon as the replacement acquisition is confirmed (either automatically in <code>Auto</code> mode or when you click <strong>Confirm</strong> in <code>Manual</code> mode), the original failed acquisition automatically transitions from <span class="badge badge-failed">Failed</span> to <span class="badge badge-reprogrammed">Reprogrammed</span> and its 3D globe target marker is hidden.
+          </li>
+        </ul>
+      </section>
+
+      <!-- Section 7: Real-Time Statistics -->
+      <section id="statistics" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">7</span> Real-Time Analytics &amp; Statistics (<code>Stats ▾</code>)</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          The <strong><code>Stats ▾</code></strong> dropdown in the <a href="#top-bar" class="internal-link">Top HUD Bar</a> provides two live, draggable chart windows that update automatically whenever any acquisition changes state:
+        </p>
+
+        <figure class="manual-figure">
+          <img src="./manual/fig5-stats-charts.svg" alt="Illustration of the Status Distribution Bar Chart and Completed vs Failed/Reprogrammed Line Chart" />
+          <figcaption>Figure 5 — Real-Time Statistics Windows: (Left) Acquisition Status Distribution Vertical Bar Chart; (Right) Completed vs Failed / Reprogrammed Cumulative Time-Series Line Chart.</figcaption>
+        </figure>
+
+        <div class="feature-grid">
+          <div class="feature-box">
+            <h4>📊 Status Distribution (Vertical Bar Chart)</h4>
+            <p>
+              Displays real-time counts and proportional vertical bars for all six statuses: <span class="badge badge-reserved">Reserved</span>, <span class="badge badge-pending">Pending</span>, <span class="badge badge-acquiring">Acquiring</span>, <span class="badge badge-completed">Completed</span>, <span class="badge badge-failed">Failed</span>, and <span class="badge badge-reprogrammed">Reprogrammed</span>.
+            </p>
+          </div>
+          <div class="feature-box">
+            <h4>📈 Completed vs Failed / Reprogrammed (Line Chart)</h4>
+            <p>
+              Plots cumulative completed acquisitions (emerald curve) against failed/reprogrammed acquisitions (rose/amber curve) across the plan timeline so operators can monitor constellation throughput and recovery rate.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 8: Glossary & Reference Table -->
+      <section id="glossary" class="manual-section">
+        <div class="section-header">
+          <h2><span class="section-num">8</span> Acquisition Status &amp; Controls Reference</h2>
+          <a href="#top" class="back-to-top">Back to top ↑</a>
+        </div>
+        <p>
+          Use the table below as a quick reference for all acquisition statuses, their meaning in the scheduling pipeline, and how they are represented on the 3D Globe.
+        </p>
+
+        <table class="manual-table">
+          <thead>
+            <tr>
+              <th>Status Badge</th>
+              <th>Lifecycle Stage &amp; Meaning</th>
+              <th>3D Globe Representation</th>
+              <th>Available User Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="badge badge-reserved">Reserved</span></td>
+              <td>Pass evaluated in <code>Manual</code> mode (<a href="#single-request" class="internal-link">Section 6.1</a>); awaiting user confirmation within 60s.</td>
+              <td>Dashed blue target footprint on Earth's surface.</td>
+              <td><strong>Confirm</strong> (→ Pending) or <strong>Cancel</strong> (deletes slot).</td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-pending">Pending</span></td>
+              <td>Confirmed and scheduled in the active plan; waiting for pass window <code>T - D/2</code>.</td>
+              <td>Cyan target footprint on Earth's surface.</td>
+              <td>Automatically reprogrammed if satellite is disabled (<a href="#satellite-status-toggle" class="internal-link">Section 4.1</a>).</td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-acquiring">Acquiring</span></td>
+              <td>Satellite is currently over the target window (between <code>T - D/2</code> and <code>T + D/2</code>) capturing imagery.</td>
+              <td>Bright amber/gold active target footprint.</td>
+              <td>Automatic transition to Completed or Failed at <code>T + D/2</code>.</td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-completed">Completed</span></td>
+              <td>Capture succeeded; <code>256×256</code> satellite image stored (<a href="#satellite-imagery" class="internal-link">Section 4.2</a>).</td>
+              <td>Emerald green completed footprint.</td>
+              <td>View image in Satellite Panel, or click <strong>Fail</strong> to invalidate.</td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-failed">Failed</span></td>
+              <td>Capture failed (simulated 10% anomaly or manually marked Failed); no image stored.</td>
+              <td>Red failed target footprint.</td>
+              <td>Click <strong>Reprogram</strong> (<a href="#reprogramming" class="internal-link">Section 6.4</a>) to task a replacement pass.</td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-reprogrammed">Reprogrammed</span></td>
+              <td>Original failed or disabled-satellite acquisition that has been superseded by a confirmed replacement pass.</td>
+              <td><strong>Hidden on 3D Globe</strong> to prevent clutter over the replacement pass.</td>
+              <td>Tracked in <a href="#acquisition-plan" class="internal-link">Global Plan</a> &amp; <a href="#statistics" class="internal-link">Stats</a> for audit history.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    // Highlight active section in the sticky Table of Contents while scrolling
+    (function () {
+      const tocLinks = Array.from(document.querySelectorAll('.toc-list a'));
+      const sections = tocLinks
+        .map((link) => {
+          const id = link.getAttribute('href')?.slice(1);
+          return id ? document.getElementById(id) : null;
+        })
+        .filter(Boolean);
+
+      function updateActiveToc() {
+        const scrollPos = window.scrollY + 120;
+        let currentId = sections[0]?.id || '';
+        for (const section of sections) {
+          if (section.offsetTop <= scrollPos) {
+            currentId = section.id;
+          }
+        }
+        for (const link of tocLinks) {
+          const isMatch = link.getAttribute('href') === '#' + currentId;
+          link.classList.toggle('active', isMatch);
+        }
+      }
+
+      window.addEventListener('scroll', updateActiveToc, { passive: true });
+      updateActiveToc();
+    })();
+  </script>
+</body>
+</html>

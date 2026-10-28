@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 340" width="1120" height="340" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <!-- Background -->
+  <rect width="1120" height="340" rx="12" fill="#070d1b" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Window Header -->
+  <rect x="20" y="18" width="1080" height="46" rx="8" fill="#0d182e" stroke="#1e3a5f" stroke-width="1.2"/>
+  <text x="40" y="46" fill="#38bdf8" font-size="13" font-weight="700" letter-spacing="0.8">GLOBAL ACQUISITION PLAN (30-MINUTE HORIZON)</text>
+
+  <!-- User Filter + View Switcher (List / Timeline) + Zoom Slider -->
+  <rect x="460" y="27" width="140" height="28" rx="6" fill="#11223d" stroke="#334155"/>
+  <text x="474" y="45" fill="#e2e8f0" font-size="11" font-weight="600">User: All Users ▾</text>
+
+  <rect x="615" y="27" width="144" height="28" rx="6" fill="#091326" stroke="#334155"/>
+  <text x="642" y="45" fill="#94a3b8" font-size="11" font-weight="600">List</text>
+  <rect x="678" y="29" width="79" height="24" rx="5" fill="#0c4a6e" stroke="#38bdf8"/>
+  <text x="717" y="45" text-anchor="middle" fill="#f0f9ff" font-size="11" font-weight="700">Timeline</text>
+
+  <text x="780" y="45" fill="#94a3b8" font-size="11" font-weight="600">Zoom: 2.5×</text>
+  <line x1="850" y1="41" x2="960" y2="41" stroke="#1e293b" stroke-width="5" stroke-linecap="round"/>
+  <line x1="850" y1="41" x2="895" y2="41" stroke="#38bdf8" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="895" cy="41" r="6" fill="#38bdf8"/>
+
+  <!-- Timeline Axis Header -->
+  <rect x="20" y="74" width="1080" height="30" fill="#0b1528" stroke="#1e293b"/>
+  <text x="36" y="93" fill="#94a3b8" font-size="10.5" font-weight="700">SATELLITE</text>
+  <text x="220" y="93" fill="#64748b" font-size="10">21:35 UTC</text>
+  <text x="400" y="93" fill="#64748b" font-size="10">21:40 UTC</text>
+  <text x="580" y="93" fill="#64748b" font-size="10">21:45 UTC</text>
+  <text x="760" y="93" fill="#64748b" font-size="10">21:50 UTC</text>
+  <text x="940" y="93" fill="#64748b" font-size="10">21:55 UTC</text>
+
+  <!-- Satellite Tracks -->
+  <!-- Track 1: SAT-POLAR-01 -->
+  <rect x="20" y="104" width="1080" height="44" fill="#091224" stroke="#16243d"/>
+  <text x="36" y="130" fill="#e2e8f0" font-size="11.5" font-weight="600">SAT-POLAR-01</text>
+  <!-- Completed block -->
+  <rect x="245" y="114" width="84" height="24" rx="5" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+  <text x="287" y="130" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="700">Completed</text>
+  <!-- Pending block -->
+  <rect x="640" y="114" width="84" height="24" rx="5" fill="#1e293b" stroke="#38bdf8" stroke-width="1.2"/>
+  <text x="682" y="130" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="700">Pending</text>
+
+  <!-- Track 2: SAT-POLAR-04 -->
+  <rect x="20" y="148" width="1080" height="44" fill="#0b1528" stroke="#16243d"/>
+  <text x="36" y="174" fill="#e2e8f0" font-size="11.5" font-weight="600">SAT-POLAR-04</text>
+  <!-- Failed block -->
+  <rect x="310" y="158" width="76" height="24" rx="5" fill="#450a0a" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="348" y="174" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="700">Failed</text>
+  <!-- Acquiring block -->
+  <rect x="455" y="158" width="88" height="24" rx="5" fill="#451a03" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="499" y="174" text-anchor="middle" fill="#fde68a" font-size="10" font-weight="700">Acquiring</text>
+
+  <!-- Track 3: SAT-POLAR-09 (Disabled) -->
+  <rect x="20" y="192" width="1080" height="44" fill="#091224" stroke="#16243d"/>
+  <text x="36" y="218" fill="#f87171" font-size="11.5" font-weight="600">SAT-POLAR-09 (OFF)</text>
+  <!-- Reprogrammed block -->
+  <rect x="520" y="202" width="110" height="24" rx="5" fill="#2e1065" stroke="#a855f7" stroke-width="1.2"/>
+  <text x="575" y="218" text-anchor="middle" fill="#e9d5ff" font-size="10" font-weight="700">Reprogrammed</text>
+
+  <!-- Track 4: SAT-POLAR-14 -->
+  <rect x="20" y="236" width="1080" height="44" fill="#0b1528" stroke="#16243d"/>
+  <text x="36" y="262" fill="#e2e8f0" font-size="11.5" font-weight="600">SAT-POLAR-14</text>
+  <!-- Reserved block -->
+  <rect x="735" y="246" width="88" height="24" rx="5" fill="#172554" stroke="#60a5fa" stroke-width="1.2" stroke-dasharray="4,2"/>
+  <text x="779" y="262" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="700">Reserved</text>
+
+  <!-- Live NOW Vertical Cursor -->
+  <line x1="485" y1="74" x2="485" y2="280" stroke="#f43f5e" stroke-width="2"/>
+  <rect x="461" y="74" width="48" height="18" rx="4" fill="#e11d48"/>
+  <text x="485" y="86" text-anchor="middle" fill="#fff" font-size="9.5" font-weight="800">NOW</text>
+
+  <!-- Low-contrast Dark Blue Horizontal Scrollbar -->
+  <rect x="190" y="292" width="900" height="12" rx="6" fill="#091326" stroke="#162844"/>
+  <rect x="280" y="294" width="260" height="8" rx="4" fill="#1e3a5f"/>
+  <text x="640" y="324" text-anchor="middle" fill="#64748b" font-size="10.5">Harmonized low-contrast dark-blue scroll sliders for horizontal time panning &amp; vertical satellite scrolling</text>
+</svg>

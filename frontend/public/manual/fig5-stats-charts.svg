@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 290" width="1120" height="290" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <rect width="1120" height="290" rx="12" fill="#070d1b" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Left Card: Status Vertical Bar Chart -->
+  <rect x="24" y="20" width="520" height="250" rx="10" fill="#0b1528" stroke="#1e3a5f" stroke-width="1.3"/>
+  <text x="44" y="48" fill="#38bdf8" font-size="12" font-weight="700" letter-spacing="0.6">ACQUISITION STATUS DISTRIBUTION (BAR CHART)</text>
+
+  <!-- Axes -->
+  <line x1="64" y1="70" x2="64" y2="225" stroke="#334155" stroke-width="1.2"/>
+  <line x1="64" y1="225" x2="518" y2="225" stroke="#334155" stroke-width="1.2"/>
+
+  <!-- Bars -->
+  <!-- Reserved -->
+  <rect x="86" y="195" width="46" height="30" rx="4" fill="#60a5fa"/>
+  <text x="109" y="188" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="700">2</text>
+  <text x="109" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Reserved</text>
+
+  <!-- Pending -->
+  <rect x="160" y="95" width="46" height="130" rx="4" fill="#38bdf8"/>
+  <text x="183" y="88" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="700">18</text>
+  <text x="183" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Pending</text>
+
+  <!-- Acquiring -->
+  <rect x="234" y="185" width="46" height="40" rx="4" fill="#f59e0b"/>
+  <text x="257" y="178" text-anchor="middle" fill="#fde68a" font-size="10" font-weight="700">3</text>
+  <text x="257" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Acquiring</text>
+
+  <!-- Completed -->
+  <rect x="308" y="80" width="46" height="145" rx="4" fill="#10b981"/>
+  <text x="331" y="73" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="700">22</text>
+  <text x="331" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Completed</text>
+
+  <!-- Failed -->
+  <rect x="382" y="175" width="46" height="50" rx="4" fill="#ef4444"/>
+  <text x="405" y="168" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="700">4</text>
+  <text x="405" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Failed</text>
+
+  <!-- Reprogrammed -->
+  <rect x="456" y="165" width="46" height="60" rx="4" fill="#a855f7"/>
+  <text x="479" y="158" text-anchor="middle" fill="#e9d5ff" font-size="10" font-weight="700">5</text>
+  <text x="479" y="244" text-anchor="middle" fill="#94a3b8" font-size="9.5">Reprog.</text>
+
+  <!-- Right Card: Completed vs Failed / Reprogrammed Line Chart -->
+  <rect x="576" y="20" width="520" height="250" rx="10" fill="#0b1528" stroke="#1e3a5f" stroke-width="1.3"/>
+  <text x="596" y="48" fill="#34d399" font-size="12" font-weight="700" letter-spacing="0.6">COMPLETED VS FAILED / REPROGRAMMED (TIME SERIES)</text>
+
+  <!-- Legend -->
+  <circle cx="885" cy="44" r="4" fill="#10b981"/>
+  <text x="895" y="48" fill="#6ee7b7" font-size="10" font-weight="600">Completed</text>
+  <circle cx="975" cy="44" r="4" fill="#f43f5e"/>
+  <text x="985" y="48" fill="#fda4af" font-size="10" font-weight="600">Failed / Reprog.</text>
+
+  <!-- Axes -->
+  <line x1="616" y1="70" x2="616" y2="225" stroke="#334155" stroke-width="1.2"/>
+  <line x1="616" y1="225" x2="1070" y2="225" stroke="#334155" stroke-width="1.2"/>
+
+  <!-- Gridlines -->
+  <line x1="616" y1="110" x2="1070" y2="110" stroke="#1e293b" stroke-dasharray="3,3"/>
+  <line x1="616" y1="150" x2="1070" y2="150" stroke="#1e293b" stroke-dasharray="3,3"/>
+  <line x1="616" y1="190" x2="1070" y2="190" stroke="#1e293b" stroke-dasharray="3,3"/>
+
+  <!-- Completed Cumulative Curve (Emerald) -->
+  <polyline points="616,225 690,202 765,172 840,145 915,112 990,92 1060,78" fill="none" stroke="#10b981" stroke-width="2.5"/>
+  <!-- Failed / Reprogrammed Cumulative Curve (Rose/Amber) -->
+  <polyline points="616,225 690,220 765,212 840,198 915,190 990,180 1060,174" fill="none" stroke="#f43f5e" stroke-width="2.2" stroke-dasharray="5,3"/>
+
+  <text x="630" y="244" fill="#64748b" font-size="9.5">T+0m</text>
+  <text x="765" y="244" fill="#64748b" font-size="9.5">T+10m</text>
+  <text x="915" y="244" fill="#64748b" font-size="9.5">T+20m</text>
+  <text x="1035" y="244" fill="#64748b" font-size="9.5">T+30m</text>
+</svg>
