@@ -9,6 +9,7 @@ import {
   computeSubsolarPoint,
   getGlobeAltitudeRatio,
   getSatelliteColor,
+  formatAcquisitionRemainingTime,
 } from '../services/api';
 
 interface GlobeVisualizerProps {
@@ -57,7 +58,7 @@ const FOOTPRINT_SIZE_UNITS = (FOOTPRINT_SIZE_KM / EARTH_RADIUS_KM) * GLOBE_RADIU
 const MAX_ORBIT_TRACE_POINTS = 2400;
 
 // Shared geometries for satellites, footprints, and selection highlight halos
-const satBodyGeom = new THREE.OctahedronGeometry(1.15, 1);
+const satBodyGeom = new THREE.SphereGeometry(1.15, 32, 32);
 const satWingGeom = new THREE.BoxGeometry(4.6, 0.75, 0.14);
 const satShaftGeom = new THREE.CylinderGeometry(0.18, 0.18, 2.6, 12);
 const satHeadGeom = new THREE.ConeGeometry(0.62, 1.45, 16);
@@ -68,6 +69,45 @@ const footprintBorderEdgesGeom = new THREE.EdgesGeometry(footprintPlaneGeom);
 const haloSphereGeom = new THREE.SphereGeometry(2.9, 24, 24);
 const haloInnerRingGeom = new THREE.TorusGeometry(3.4, 0.18, 12, 48);
 const haloOuterRingGeom = new THREE.TorusGeometry(4.4, 0.11, 12, 48);
+
+/**
+ * Creates a camera-space volumetric 3D shaded sphere material (Blinn-Phong with dark shadow edge
+ * and specular highlight) so spheres always render with crisp 3D depth regardless of globe scene ambient lighting.
+ */
+function createVolumetricSphereMaterial(initialColor: THREE.Color): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: initialColor.clone() },
+    },
+    vertexShader: `
+      varying vec3 vViewNormal;
+      void main() {
+        vViewNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying vec3 vViewNormal;
+      void main() {
+        vec3 N = normalize(vViewNormal);
+        vec3 keyLight = normalize(vec3(-0.48, 0.58, 0.66));
+        vec3 fillLight = normalize(vec3(0.55, -0.35, 0.45));
+        vec3 viewDir = vec3(0.0, 0.0, 1.0);
+
+        float diffKey = max(dot(N, keyLight), 0.0);
+        float diffFill = max(dot(N, fillLight), 0.0) * 0.22;
+
+        vec3 halfVec = normalize(keyLight + viewDir);
+        float spec = pow(max(dot(N, halfVec), 0.0), 34.0) * 0.55;
+
+        // Deep shadow core (0.15) up to bright lit side + white specular highlight for 3D volume
+        vec3 shaded = uColor * (0.15 + 0.88 * diffKey + diffFill) + vec3(spec);
+        gl_FragColor = vec4(shaded, 1.0);
+      }
+    `,
+  });
+}
 
 /**
  * Converts geographic (lat, lng) into ThreeGlobe's unit Cartesian vector
@@ -91,13 +131,8 @@ function createSatelliteAndFootprintMesh(sat: SatellitePosition): THREE.Group {
   const group = new THREE.Group();
   const baseColor = new THREE.Color(sat.color);
 
-  // 1. Central satellite bus (colored uniquely per satellite)
-  const bodyMat = new THREE.MeshPhongMaterial({
-    color: baseColor,
-    emissive: baseColor,
-    emissiveIntensity: 0.55,
-    shininess: 95,
-  });
+  // 1. Central satellite bus sphere (volumetrically 3D shaded per satellite)
+  const bodyMat = createVolumetricSphereMaterial(baseColor);
   const bodyMesh = new THREE.Mesh(satBodyGeom, bodyMat);
   group.add(bodyMesh);
 
@@ -187,7 +222,8 @@ function createSatelliteAndFootprintMesh(sat: SatellitePosition): THREE.Group {
   group.add(footprintMesh);
 
   group.userData.colorHex = sat.color;
-  group.userData.phongMaterials = [bodyMat, wingMat, arrowMat];
+  group.userData.shadedSphereMat = bodyMat;
+  group.userData.phongMaterials = [wingMat, arrowMat];
   group.userData.basicMaterials = [haloSphereMat, haloOuterRingMat, footprintMat, borderMat];
 
   return group;
@@ -197,6 +233,11 @@ function updateSatelliteMeshColor(group: THREE.Group, nextColorHex: string): voi
   if (group.userData.colorHex === nextColorHex) return;
   group.userData.colorHex = nextColorHex;
   const nextColor = new THREE.Color(nextColorHex);
+
+  const shadedSphereMat = group.userData.shadedSphereMat as THREE.ShaderMaterial | undefined;
+  if (shadedSphereMat) {
+    shadedSphereMat.uniforms.uColor.value.copy(nextColor);
+  }
 
   const phongMats = group.userData.phongMaterials as THREE.MeshPhongMaterial[] | undefined;
   if (phongMats) {
@@ -217,11 +258,109 @@ function updateSatelliteMeshColor(group: THREE.Group, nextColorHex: string): voi
 }
 
 /**
+ * Draws the 3D floating HUD text canvas for an acquisition target on the globe,
+ * highlighting both the live remaining countdown and the planned UTC time.
+ */
+function drawAcquisitionTargetLabelCanvas(
+  canvas: HTMLCanvasElement,
+  acq: AcquisitionPlanRow,
+  satColorHex: string,
+  nowMs: number
+): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const statusColorHex = getAcquisitionStatusColor(acq.status);
+  const remInfo = formatAcquisitionRemainingTime(acq, nowMs);
+  const shortSat = acq.satellite_id.slice(-4).toUpperCase();
+  const plannedUtcStr = new Date(acq.acquisition_timestamp)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(11, 19);
+
+  const pad = 10;
+  const r = 18;
+  const bx = pad;
+  const by = pad;
+  const bw = w - pad * 2;
+  const bh = h - pad * 2;
+
+  // Rounded dark glass card background
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(bx, by, bw, bh, r);
+  ctx.fillStyle = 'rgba(7, 13, 28, 0.90)';
+  ctx.fill();
+
+  // Status-colored glowing border
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = statusColorHex;
+  ctx.shadowColor = statusColorHex;
+  ctx.shadowBlur = 10;
+  ctx.stroke();
+  ctx.restore();
+
+  // Satellite & Status top line
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(bx + 26, by + 32, 7, 0, Math.PI * 2);
+  ctx.fillStyle = satColorHex;
+  ctx.fill();
+
+  ctx.font = '700 20px "JetBrains Mono", Consolas, monospace';
+  ctx.fillStyle = '#e2e8f0';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`SAT-${shortSat} • ${acq.status.toUpperCase()}`, bx + 42, by + 32);
+
+  // Prominent Remaining Time middle line
+  ctx.font = '800 27px "JetBrains Mono", Consolas, monospace';
+  ctx.fillStyle = statusColorHex;
+  ctx.fillText(`⏱ ${remInfo.globeLabel}`, bx + 20, by + 76);
+
+  // Planned UTC time & target coordinates bottom line
+  ctx.font = '600 18px "JetBrains Mono", Consolas, monospace';
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(
+    `PLANNED: ${plannedUtcStr} UTC • (${acq.center_latitude_deg.toFixed(1)}°, ${acq.center_longitude_deg.toFixed(1)}°)`,
+    bx + 20,
+    by + 116
+  );
+  ctx.restore();
+}
+
+function updateAcquisitionTargetLabel(
+  group: THREE.Group,
+  acq: AcquisitionPlanRow,
+  satColorHex: string,
+  nowMs: number
+): void {
+  const remInfo = formatAcquisitionRemainingTime(acq, nowMs);
+  const nextKey = `${acq.id}:${acq.status}:${remInfo.diffSeconds}:${satColorHex}`;
+  if (group.userData.labelStateKey === nextKey) return;
+  group.userData.labelStateKey = nextKey;
+
+  const canvas = group.userData.labelCanvas as HTMLCanvasElement | undefined;
+  const texture = group.userData.labelTexture as THREE.CanvasTexture | undefined;
+  if (!canvas || !texture) return;
+
+  drawAcquisitionTargetLabelCanvas(canvas, acq, satColorHex, nowMs);
+  texture.needsUpdate = true;
+}
+
+/**
  * Builds the highlighted acquisition target rectangle on the globe surface at the exact
  * physical scale (width_m along geographic parallels, height_m along meridians), plus
- * a pulsing highlight frame so even small 5x5 km targets stand out clearly on the globe.
+ * a pulsing highlight frame and a floating 3D text billboard showing the remaining time.
  */
-function createAcquisitionTargetMesh(acq: AcquisitionPlanRow, colorHex: string): THREE.Group {
+function createAcquisitionTargetMesh(
+  acq: AcquisitionPlanRow,
+  colorHex: string,
+  initialNowMs: number
+): THREE.Group {
   const group = new THREE.Group();
   const baseColor = new THREE.Color(colorHex);
 
@@ -283,8 +422,53 @@ function createAcquisitionTargetMesh(acq: AcquisitionPlanRow, colorHex: string):
   highlightGroup.add(locatorRingMesh);
 
   group.add(highlightGroup);
+
+  // 3. Displaced 3D callout leader & floating 3D HUD billboard to the right of the target location
+  const leadStartX = ringRadius + 0.12;
+  const leadElbowX = ringRadius + 1.55;
+  const leadEndX = ringRadius + 2.35;
+  const leadEndZ = 1.35;
+
+  const stemGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(leadStartX, 0, 0.04),
+    new THREE.Vector3(leadElbowX, 0, leadEndZ),
+    new THREE.Vector3(leadEndX, 0, leadEndZ),
+  ]);
+  const stemMat = new THREE.LineBasicMaterial({
+    color: statusColor,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const stemLine = new THREE.Line(stemGeom, stemMat);
+  group.add(stemLine);
+
+  const labelCanvas = document.createElement('canvas');
+  labelCanvas.width = 620;
+  labelCanvas.height = 160;
+  const labelTexture = new THREE.CanvasTexture(labelCanvas);
+  labelTexture.minFilter = THREE.LinearFilter;
+  labelTexture.magFilter = THREE.LinearFilter;
+
+  const labelSpriteMat = new THREE.SpriteMaterial({
+    map: labelTexture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const labelSprite = new THREE.Sprite(labelSpriteMat);
+  // Anchor at the left-center edge (0, 0.5) so the billboard extends strictly to the right of the leader tip
+  labelSprite.center.set(0, 0.5);
+  labelSprite.position.set(leadEndX + 0.18, 0, leadEndZ);
+  labelSprite.scale.set(14.5, 3.75, 1);
+  labelSprite.renderOrder = 999;
+  group.add(labelSprite);
+
   group.userData.acqHighlightGroup = highlightGroup;
-  group.userData.haloMaterials = [outerFrameMat, locatorRingMat];
+  group.userData.haloMaterials = [outerFrameMat, locatorRingMat, stemMat];
+  group.userData.labelCanvas = labelCanvas;
+  group.userData.labelTexture = labelTexture;
+
+  updateAcquisitionTargetLabel(group, acq, colorHex, initialNowMs);
 
   return group;
 }
@@ -297,7 +481,7 @@ interface OrbitTraceResources {
   nadirLine: THREE.Line;
   nadirPositions: Float32Array;
   futureSatMesh: THREE.Mesh;
-  futureSatMat: THREE.MeshBasicMaterial;
+  futureSatMat: THREE.ShaderMaterial;
 }
 
 /**
@@ -338,13 +522,9 @@ function createOrbitTraceResources(): OrbitTraceResources {
   nadirLine.frustumCulled = false;
   group.add(nadirLine);
 
-  // Marker at the satellite's orbital position at acquisition_timestamp
-  const futureSatGeom = new THREE.SphereGeometry(0.95, 16, 16);
-  const futureSatMat = new THREE.MeshBasicMaterial({
-    color: '#ffffff',
-    transparent: true,
-    opacity: 0.95,
-  });
+  // Marker at the satellite's orbital position at acquisition_timestamp (half size, 3D volumetrically shaded)
+  const futureSatGeom = new THREE.SphereGeometry(0.475, 32, 32);
+  const futureSatMat = createVolumetricSphereMaterial(new THREE.Color('#ffffff'));
   const futureSatMesh = new THREE.Mesh(futureSatGeom, futureSatMat);
   futureSatMesh.frustumCulled = false;
   group.add(futureSatMesh);
@@ -677,7 +857,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
     const endOrbitZ = traceRes.orbitPositions[lastIdx3 + 2];
 
     traceRes.futureSatMesh.position.set(endOrbitX, endOrbitY, endOrbitZ);
-    traceRes.futureSatMat.color.copy(baseColor);
+    traceRes.futureSatMat.uniforms.uColor.value.copy(baseColor);
 
     const targetSurfaceVec = latLngToUnitVector(
       activeAcq.center_latitude_deg,
@@ -731,6 +911,11 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
         acquisition: activeAcq,
         color: satColor,
       });
+
+      const cachedAcqMesh = acqMeshCacheRef.current.get(`${activeAcq.id}:${satColor}`);
+      if (cachedAcqMesh) {
+        updateAcquisitionTargetLabel(cachedAcqMesh, activeAcq, satColor, simMs);
+      }
     }
 
     globe.objectsData(combinedObjects);
@@ -821,9 +1006,10 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
       .objectThreeObject((d: object) => {
         if (isAcquisitionObject(d)) {
           const key = `${d.acquisition.id}:${d.color}`;
+          const nowSimMs = getSimulatedTimeMsRef.current();
           let acqMesh = acqMeshCacheRef.current.get(key);
           if (!acqMesh) {
-            acqMesh = createAcquisitionTargetMesh(d.acquisition, d.color);
+            acqMesh = createAcquisitionTargetMesh(d.acquisition, d.color, nowSimMs);
             acqMeshCacheRef.current.set(key, acqMesh);
           } else {
             const nextStatusColor = new THREE.Color(getAcquisitionStatusColor(d.acquisition.status));
@@ -833,6 +1019,7 @@ export const GlobeVisualizer: React.FC<GlobeVisualizerProps> = ({
             if (haloMats) {
               haloMats.forEach((mat) => mat.color.copy(nextStatusColor));
             }
+            updateAcquisitionTargetLabel(acqMesh, d.acquisition, d.color, nowSimMs);
           }
           return acqMesh;
         }

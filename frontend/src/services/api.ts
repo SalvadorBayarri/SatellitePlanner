@@ -507,3 +507,97 @@ export function subscribeToAcquisitionUpdates(
     eventSource.close();
   };
 }
+
+export interface AcquisitionRemainingTimeInfo {
+  shortLabel: string;
+  globeLabel: string;
+  tone: 'upcoming' | 'acquiring' | 'completed' | 'failed' | 'past';
+  diffSeconds: number;
+}
+
+function formatDurationCompact(totalSeconds: number): string {
+  const absSec = Math.max(0, Math.floor(totalSeconds));
+  const hrs = Math.floor(absSec / 3600);
+  const mins = Math.floor((absSec % 3600) / 60);
+  const secs = absSec % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+  }
+  if (mins > 0) {
+    return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  }
+  return `${secs}s`;
+}
+
+/**
+ * Computes human-readable remaining/elapsed time labels for an acquisition row
+ * relative to `nowMs` (real UTC or simulated time).
+ */
+export function formatAcquisitionRemainingTime(
+  acq: Pick<AcquisitionPlanRow, 'acquisition_timestamp' | 'duration_seconds' | 'status'>,
+  nowMs: number
+): AcquisitionRemainingTimeInfo {
+  const targetMs = new Date(acq.acquisition_timestamp).getTime();
+  const halfDurMs = ((acq.duration_seconds || 20) * 1000) / 2;
+  const statusLower = (acq.status || '').toLowerCase();
+
+  if (statusLower === 'acquiring') {
+    const remSec = Math.max(0, Math.ceil((targetMs + halfDurMs - nowMs) / 1000));
+    const durStr = formatDurationCompact(remSec);
+    return {
+      shortLabel: `Acquiring (${durStr} left)`,
+      globeLabel: `ACQUIRING • ${durStr} LEFT`,
+      tone: 'acquiring',
+      diffSeconds: remSec,
+    };
+  }
+
+  if (statusLower === 'pending' || statusLower === 'reserved') {
+    const diffSec = Math.ceil((targetMs - nowMs) / 1000);
+    if (diffSec > 0) {
+      const durStr = formatDurationCompact(diffSec);
+      return {
+        shortLabel: `in ${durStr}`,
+        globeLabel: `REMAINING: ${durStr}`,
+        tone: 'upcoming',
+        diffSeconds: diffSec,
+      };
+    }
+    return {
+      shortLabel: 'Due now (0s)',
+      globeLabel: 'REMAINING: 0s (DUE NOW)',
+      tone: 'acquiring',
+      diffSeconds: 0,
+    };
+  }
+
+  const elapsedSec = Math.max(0, Math.floor((nowMs - targetMs) / 1000));
+  const durStr = formatDurationCompact(elapsedSec);
+  const agoText = elapsedSec > 0 ? `${durStr} ago` : 'just now';
+
+  if (statusLower === 'completed') {
+    return {
+      shortLabel: `Done (${agoText})`,
+      globeLabel: `COMPLETED (${agoText})`,
+      tone: 'completed',
+      diffSeconds: -elapsedSec,
+    };
+  }
+
+  if (statusLower === 'failed') {
+    return {
+      shortLabel: `Failed (${agoText})`,
+      globeLabel: `FAILED (${agoText})`,
+      tone: 'failed',
+      diffSeconds: -elapsedSec,
+    };
+  }
+
+  return {
+    shortLabel: agoText,
+    globeLabel: `${acq.status.toUpperCase()} (${agoText})`,
+    tone: 'past',
+    diffSeconds: -elapsedSec,
+  };
+}
+

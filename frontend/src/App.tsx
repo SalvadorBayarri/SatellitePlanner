@@ -55,12 +55,75 @@ import {
   subscribeToAcquisitionUpdates,
   computeSatellitePosition,
   getSatelliteColor,
+  formatAcquisitionRemainingTime,
 } from './services/api';
 import './App.css';
 
 function formatUtcTimestamp(ms: number): string {
   const d = new Date(ms);
   return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+interface IntervalStatsSummary {
+  count: number;
+  intervalsCount: number;
+  minSec: number | null;
+  maxSec: number | null;
+  avgSec: number | null;
+  stdDevSec: number | null;
+}
+
+function computeStatusIntervalStats(
+  planRows: AcquisitionPlanRow[],
+  statusKey: string
+): IntervalStatsSummary {
+  const matchingMs = planRows
+    .filter((r) => (r.status || '').toLowerCase() === statusKey.toLowerCase())
+    .map((r) => new Date(r.acquisition_timestamp).getTime())
+    .filter((ms) => Number.isFinite(ms))
+    .sort((a, b) => a - b);
+
+  if (matchingMs.length < 2) {
+    return {
+      count: matchingMs.length,
+      intervalsCount: 0,
+      minSec: null,
+      maxSec: null,
+      avgSec: null,
+      stdDevSec: null,
+    };
+  }
+
+  const intervalsSec: number[] = [];
+  for (let i = 1; i < matchingMs.length; i++) {
+    intervalsSec.push(Math.max(0, (matchingMs[i] - matchingMs[i - 1]) / 1000));
+  }
+
+  const m = intervalsSec.length;
+  const minSec = Math.min(...intervalsSec);
+  const maxSec = Math.max(...intervalsSec);
+  const avgSec = intervalsSec.reduce((sum, v) => sum + v, 0) / m;
+  const variance = intervalsSec.reduce((sum, v) => sum + (v - avgSec) ** 2, 0) / m;
+  const stdDevSec = Math.sqrt(variance);
+
+  return {
+    count: matchingMs.length,
+    intervalsCount: m,
+    minSec,
+    maxSec,
+    avgSec,
+    stdDevSec,
+  };
+}
+
+function formatIntervalStatSeconds(sec: number | null): string {
+  if (sec === null || !Number.isFinite(sec)) return '—';
+  if (sec < 60) {
+    return `${sec.toFixed(1)}s`;
+  }
+  const mins = Math.floor(sec / 60);
+  const remSec = sec - mins * 60;
+  return `${mins}m ${remSec.toFixed(0).padStart(2, '0')}s`;
 }
 
 interface DraggablePanelProps {
@@ -2076,6 +2139,7 @@ export function App() {
                   const satColor = satCfg ? getSatelliteColor(satCfg) : '#38bdf8';
                   const shortSat = row.satellite_id.slice(-4).toUpperCase();
                   const utcStr = formatUtcTimestamp(new Date(row.acquisition_timestamp).getTime());
+                  const remInfo = formatAcquisitionRemainingTime(row, clockDisplay.utcMs);
                   const sizeKm = (row.width_m / 1000).toFixed(1);
                   const userName = getUserName(row.user_id);
 
@@ -2102,12 +2166,20 @@ export function App() {
                           <span className="acq-list-sat-code">SAT-{shortSat}</span>
                           <span className="acq-list-user-pill">{userName}</span>
                         </div>
-                        <span className={`acq-status-badge ${row.status.toLowerCase()}`}>
-                          {row.status}
-                        </span>
+                        <div className="acq-list-status-group">
+                          <span
+                            className={`acq-remaining-pill ${remInfo.tone}`}
+                            title="Remaining / elapsed time relative to current UTC"
+                          >
+                            ⏱ {remInfo.shortLabel}
+                          </span>
+                          <span className={`acq-status-badge ${row.status.toLowerCase()}`}>
+                            {row.status}
+                          </span>
+                        </div>
                       </div>
                       <div className="acq-list-item-bottom">
-                        <span className="acq-list-time">{utcStr}</span>
+                        <span className="acq-list-time">Planned: {utcStr}</span>
                         <span className="acq-list-coords">
                           {sizeKm}×{sizeKm} km • ({row.center_latitude_deg.toFixed(2)}°,{' '}
                           {row.center_longitude_deg.toFixed(2)}°)
@@ -2142,11 +2214,32 @@ export function App() {
                   : 10 * 60_000;
 
               const firstTickMs = Math.ceil(startMs / tickIntervalMs) * tickIntervalMs;
-              const ticks: Array<{ xPx: number; hhmm: string }> = [];
+              const ticks: Array<{
+                xPx: number;
+                hhmm: string;
+                relStr: string;
+                isFuture: boolean;
+              }> = [];
               for (let tMs = firstTickMs; tMs <= endMs; tMs += tickIntervalMs) {
                 const xPx = (tMs - startMs) * pxPerMs;
                 const hhmm = new Date(tMs).toISOString().slice(11, 16) + ' UTC';
-                ticks.push({ xPx, hhmm });
+                const diffMin = Math.round((tMs - clockDisplay.utcMs) / 60_000);
+                const relStr =
+                  diffMin > 0
+                    ? `+${diffMin}m`
+                    : diffMin === 0
+                    ? 'NOW'
+                    : `${diffMin}m`;
+                ticks.push({ xPx, hhmm, relStr, isFuture: diffMin >= 0 });
+              }
+
+              const minorStepMs = tickIntervalMs >= 5 * 60_000 ? 60_000 : 30_000;
+              const firstMinorMs = Math.ceil(startMs / minorStepMs) * minorStepMs;
+              const minorTicksPx: number[] = [];
+              for (let mMs = firstMinorMs; mMs <= endMs; mMs += minorStepMs) {
+                if (mMs % tickIntervalMs !== 0) {
+                  minorTicksPx.push((mMs - startMs) * pxPerMs);
+                }
               }
 
               return (
@@ -2165,19 +2258,37 @@ export function App() {
                       }}
                       title="Spin mouse wheel here to zoom timeline horizontal scale"
                     >
-                      <div className="acq-timeline-sat-col-header">SATELLITE</div>
+                      <div className="acq-timeline-sat-col-header">
+                        <span>SATELLITE</span>
+                        <span className="acq-timeline-col-sub">TIME SCALE →</span>
+                      </div>
                       <div
                         className="acq-timeline-scale-header"
                         style={{ width: `${trackWidthPx}px` }}
                       >
-                        {ticks.map((tk, idx) => (
+                        {minorTicksPx.map((mx, idx) => (
                           <span
+                            key={`minor-${idx}`}
+                            className="acq-timeline-minor-tick"
+                            style={{ left: `${mx}px` }}
+                          />
+                        ))}
+                        {ticks.map((tk, idx) => (
+                          <div
                             key={idx}
-                            className="acq-timeline-tick-label"
+                            className="acq-timeline-tick-group"
                             style={{ left: `${tk.xPx}px` }}
                           >
-                            {tk.hhmm}
-                          </span>
+                            <span
+                              className={`acq-timeline-tick-rel ${
+                                tk.isFuture ? 'future' : 'past'
+                              }`}
+                            >
+                              {tk.relStr}
+                            </span>
+                            <span className="acq-timeline-tick-label">{tk.hhmm}</span>
+                            <span className="acq-timeline-major-tick" />
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -2186,18 +2297,25 @@ export function App() {
                       className="acq-timeline-rows"
                       style={{ width: `${112 + trackWidthPx}px` }}
                     >
-                      {/* Vertical current-time indicator crossing all satellite horizontal lines */}
+                      {/* Vertical time grid lines & current-time indicator crossing all satellite horizontal lines */}
                       <div
                         className="acq-timeline-track-overlay"
                         style={{ width: `${trackWidthPx}px` }}
                       >
+                        {ticks.map((tk, idx) => (
+                          <div
+                            key={`grid-${idx}`}
+                            className="acq-timeline-grid-line"
+                            style={{ left: `${tk.xPx}px` }}
+                          />
+                        ))}
                         <div
                           className="acq-timeline-now-line"
                           style={{ left: `${nowX}px` }}
                           title={`Current Time: ${formatUtcTimestamp(clockDisplay.utcMs)}`}
                         >
                           <span className="acq-timeline-now-badge">
-                            {new Date(clockDisplay.utcMs).toISOString().slice(11, 19)}
+                            NOW • {new Date(clockDisplay.utcMs).toISOString().slice(11, 19)}
                           </span>
                         </div>
                       </div>
@@ -2255,6 +2373,10 @@ export function App() {
                                   activeSatellite?.id === row.satellite_id &&
                                   activeAcquisitionRow?.id === row.id;
                                 const utcStr = formatUtcTimestamp(rowMs);
+                                const remInfo = formatAcquisitionRemainingTime(
+                                  row,
+                                  clockDisplay.utcMs
+                                );
                                 const userName = getUserName(row.user_id);
 
                                 return (
@@ -2266,7 +2388,7 @@ export function App() {
                                     }`}
                                     style={{ left: `${xPx}px` }}
                                     onClick={() => selectAcquisitionAndOpenPanel(row)}
-                                    title={`SAT-${shortCode} • ${row.status} • ${utcStr} • User: ${userName} • (${row.center_latitude_deg.toFixed(2)}°, ${row.center_longitude_deg.toFixed(2)}°)`}
+                                    title={`SAT-${shortCode} • ${row.status} • Remaining: ${remInfo.shortLabel} • Planned: ${utcStr} • User: ${userName} • (${row.center_latitude_deg.toFixed(2)}°, ${row.center_longitude_deg.toFixed(2)}°)`}
                                     aria-label={`Select acquisition for SAT-${shortCode} at ${utcStr} (${row.status})`}
                                   />
                                 );
@@ -2355,6 +2477,70 @@ export function App() {
                   );
                 })}
               </div>
+
+              {(() => {
+                const completedStats = computeStatusIntervalStats(acquisitionPlan, 'completed');
+                const pendingStats = computeStatusIntervalStats(acquisitionPlan, 'pending');
+                const intervalRows = [
+                  {
+                    key: 'completed',
+                    label: 'Completed Acquisitions',
+                    color: '#34d399',
+                    stats: completedStats,
+                  },
+                  {
+                    key: 'pending',
+                    label: 'Pending Acquisitions',
+                    color: '#fbbf24',
+                    stats: pendingStats,
+                  },
+                ];
+                return (
+                  <div className="interval-stats-section">
+                    <table className="interval-stats-table">
+                      <thead>
+                        <tr>
+                          <th className="interval-col-group">TIME INTERVALS</th>
+                          <th className="interval-col-num">MIN</th>
+                          <th className="interval-col-num">MAX</th>
+                          <th className="interval-col-num">AVG</th>
+                          <th className="interval-col-num">STD DEV</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {intervalRows.map((row) => (
+                          <tr key={row.key}>
+                            <td className="interval-col-group">
+                              <span className="interval-stats-group">
+                                <span
+                                  className="acq-list-sat-dot"
+                                  style={{
+                                    backgroundColor: row.color,
+                                    boxShadow: `0 0 6px ${row.color}`,
+                                  }}
+                                />
+                                <span>{row.label}</span>
+                              </span>
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.minSec)}
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.maxSec)}
+                            </td>
+                            <td className="interval-stat-val highlight">
+                              {formatIntervalStatSeconds(row.stats.avgSec)}
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.stdDevSec)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </DraggablePanel>
           );
         })()}
@@ -2591,6 +2777,70 @@ export function App() {
                   />
                 </svg>
               </div>
+
+              {(() => {
+                const completedStats = computeStatusIntervalStats(acquisitionPlan, 'completed');
+                const pendingStats = computeStatusIntervalStats(acquisitionPlan, 'pending');
+                const intervalRows = [
+                  {
+                    key: 'completed',
+                    label: 'Completed Acquisitions',
+                    color: '#34d399',
+                    stats: completedStats,
+                  },
+                  {
+                    key: 'pending',
+                    label: 'Pending Acquisitions',
+                    color: '#fbbf24',
+                    stats: pendingStats,
+                  },
+                ];
+                return (
+                  <div className="interval-stats-section">
+                    <table className="interval-stats-table">
+                      <thead>
+                        <tr>
+                          <th className="interval-col-group">TIME INTERVALS</th>
+                          <th className="interval-col-num">MIN</th>
+                          <th className="interval-col-num">MAX</th>
+                          <th className="interval-col-num">AVG</th>
+                          <th className="interval-col-num">STD DEV</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {intervalRows.map((row) => (
+                          <tr key={row.key}>
+                            <td className="interval-col-group">
+                              <span className="interval-stats-group">
+                                <span
+                                  className="acq-list-sat-dot"
+                                  style={{
+                                    backgroundColor: row.color,
+                                    boxShadow: `0 0 6px ${row.color}`,
+                                  }}
+                                />
+                                <span>{row.label}</span>
+                              </span>
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.minSec)}
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.maxSec)}
+                            </td>
+                            <td className="interval-stat-val highlight">
+                              {formatIntervalStatSeconds(row.stats.avgSec)}
+                            </td>
+                            <td className="interval-stat-val">
+                              {formatIntervalStatSeconds(row.stats.stdDevSec)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </DraggablePanel>
           );
         })()}
@@ -2806,6 +3056,22 @@ export function App() {
                         <span className="label">PLANNED TIME</span>
                         <span className="mono">
                           {formatUtcTimestamp(new Date(activeAcquisitionRow.acquisition_timestamp).getTime())}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="label">REMAINING TIME</span>
+                        <span className="mono">
+                          {(() => {
+                            const remInfo = formatAcquisitionRemainingTime(
+                              activeAcquisitionRow,
+                              clockDisplay.utcMs
+                            );
+                            return (
+                              <span className={`acq-remaining-pill ${remInfo.tone}`}>
+                                ⏱ {remInfo.shortLabel}
+                              </span>
+                            );
+                          })()}
                         </span>
                       </div>
                       <div>
